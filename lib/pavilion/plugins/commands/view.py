@@ -3,6 +3,7 @@ import pprint
 import sys
 
 from pavilion import commands
+from pavilion import output
 from pavilion import system_variables
 from pavilion.plugins.commands import run
 from pavilion.output import fprint
@@ -69,17 +70,19 @@ class ViewCommand(run.RunCommand):
 
         sys_vars = system_variables.get_vars(True)
 
-        configs = self._get_tests(
-            pav_cfg=pav_cfg,
-            host=args.host,
-            test_files=[],
-            tests=tests,
-            modes=args.modes,
-            overrides=overrides,
-            sys_vars=sys_vars,
-        )
+        try:
+            configs_by_sched = self._get_test_configs(
+                pav_cfg=pav_cfg, host=args.host,
+                test_files=[], tests=tests,
+                modes=args.modes,
+                overrides=overrides)
+        except commands.CommandError as err:
+            fprint(err, file=self.errfile, color=output.RED)
+            return errno.EINVAL
 
-        configs = sum(configs.values(), [])
+        configs = []
+        for conf_tuples in configs_by_sched.values():
+            configs.extend([conf for conf, _ in conf_tuples])
 
         for config in configs:
             pprint.pprint(config, stream=self.outfile)  # ext-print: ignore

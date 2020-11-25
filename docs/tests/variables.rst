@@ -1,16 +1,15 @@
+.. _tests.variables:
+
 Pavilion Test Variables
 =======================
 
-Pavilion test configs can contain variable references in their various
-value strings. Here we look at these variables in full detail.
+Pavilion provides a wide variety of variable you can substitute into your
+test configuration values using :ref:`tests.values.expressions`. This covers
+where those values come from.
 
--  `Variable Sets <#variable-sets>`__
--  `Variable Types <#variable-types>`__
--  `Test Variables <#test-variables>`__
--  `Deferred Variables <#deferred-variables>`__
--  `Substrings <#substrings>`__
--  `Default Values <#default-values>`__
--  `Permutations <#permutations>`__
+.. contents::
+
+.. _tests.variables.sets:
 
 Variable Sets
 -------------
@@ -27,10 +26,10 @@ the set isn't specified.
     foo:
         variables:
           host_name: foo
-          
+
         run:
           # This would echo 'foo' regardless of the fact that the system variables
-          # also provides a 'host_name' variable, as the test variables (var) set 
+          # also provides a 'host_name' variable, as the test variables (var) set
           # takes precedence.
           cmds: "echo {{host_name}}"
 
@@ -38,8 +37,8 @@ Test Variables (var)
 ^^^^^^^^^^^^^^^^^^^^
 
 The test's ``variables`` section provides these variables, as
-demonstrated in many examples. See the `Test
-Variables <#test-variables>`__ section for more on these. While these
+demonstrated in many examples. See the :ref:`tests.variables.detail`
+section for more on these. While these
 generally come from the test config, they can also be provided via host
 and mode configuration files.
 
@@ -50,7 +49,7 @@ System variables are provided via system plugins. These are designed to
 be easy to write, and provide a way for people working with Pavilion to
 provide extra information about the system or cluster that Pavilion is
 currently running on. The values may be
-`deferred <#deferred-variables>`__.
+:ref:`tests.variables.deferred`.
 
 Use ``pav show sys_vars`` to list the system variables.
 
@@ -81,6 +80,8 @@ asked for by the test. Scheduler plugin writers are encouraged to
 provide helper variables to simplify the launching of tests within an
 arbitrary allocation.
 
+.. _tests.variables.types:
+
 Variable Types
 --------------
 
@@ -89,7 +90,7 @@ are several variable data structures available.
 
 **Note: While all of the following examples use variables from the 'test
 variables' set, variables from any variable set may have such data
-structures.**
+structures (but nothing more complex).**
 
 Single Value
 ^^^^^^^^^^^^
@@ -103,8 +104,8 @@ are simply replaced with the variable's value.
     foo:
       variables:
         bar: "baz"
-        
-      run: 
+
+      run:
         cmds: "echo {{bar}}"
 
 Multiple Values
@@ -118,7 +119,7 @@ Variables may have multiple values, and referenced with an index
     multi_vars:
         variables:
             msg: ['hello', 'you', 'handsome', 'devil']
-        
+
         run:
           # Would print 'hello you devil'
           cmds: "echo {{msg.0}} {{msg.1}} {{msg.3}}"
@@ -133,13 +134,13 @@ variables can be referenced by the 0th index.
         variables:
           paths: ['/usr', '/home', '/root']
           list_cmd: 'ls'
-          
+
         run:
             # This would result in the command: 'ls /usr'
             cmds: '{{list_cmd.0}} {{paths}}'
 
-This can be used with repeated `substrings <#substrings>`__ to produce
-dynamic test arguments, among other things.
+This can be used with repeated :ref:`tests.values.iterations`
+to produce dynamic test arguments, among other things.
 
 Complex Variables
 ^^^^^^^^^^^^^^^^^
@@ -152,11 +153,11 @@ sub-keys without specifying a sub-key.
 
     subkeyed_vars:
         variables:
-          compiler: 
-            name: 'gcc' 
+          compiler:
+            name: 'gcc'
             cmd: 'mpicc'
             openmp: '-fopenmp'
-        
+
         build:
           # Will result in 'mpicc -fopenmp mysrc.c'
           cmds: '{{compiler.cmd}} {{compiler.openmp}} mysrc.c'
@@ -167,16 +168,19 @@ But wait, there's more. Complex variables may also have multiple values.
 
     subkeyed_vars:
         variables:
-          compiler: 
+          compiler:
             - {name: 'gcc',   mpi: 'openmpi',   cmd: 'mpicc',  openmp: '-fopenmp'}
             - {name: 'intel', mpi: 'intel-mpi', cmd: 'mpiicc', openmp: '-qopenmp'}
-        
+
         build:
           # Will result in `mpiicc -qopenmp mysrc.c`
           cmds: '{{compiler.1.cmd}} {{compiler.1.openmp}} mysrc.c'
 
-This is especially useful when combined with repeated
-`substrings <#substrings>`__ and `permuations <#permutations>`__.
+This is especially useful when combined with
+:ref:`tests.values.iterations` and
+:ref:`tests.permutations`.
+
+.. _tests.variables.detail:
 
 Test Variables
 --------------
@@ -186,12 +190,7 @@ commands, where they can be modified through inheritance or defined by
 host or mode configurations. Like everything else in test configs,
 variables defined at the test level override anything defined by host or
 mode configs. Unlike everything else, however, you can override that
-behavior by appending a special character to the variable name.
-
--  The actual variable name won't have the special character.
--  You can't combine these.
--  These can be used in host/mode configs too, but they only apply at
-   that level.
+behavior by appending a ``'?'`` or ``'+'`` to the variable name.
 
 Test Variable References
 ^^^^^^^^^^^^^^^^^^^^^^^^
@@ -221,13 +220,13 @@ value is provided by an underlying host/mode config files.
 
     expected_test:
       variables:
-        # Pavilion will only use this value if the host or mode configs 
+        # Pavilion will only use this value if the host or mode configs
         # don't define it.
         intensity?: 1
-        
+
         # Pavilion expects the hosts or modes to provide this value.
         power?:
-        
+
         run:
           cmds:
             - "./run_test -i {{intensity}} -p {{power}}"
@@ -239,9 +238,6 @@ Instead of overriding values from host/mode configs, this lets you
 append one or more additional unique values for that variable. You must
 add at least one value.
 
-You'll generally want to use these in `permutations <#permutations>`__
-or `substrings <#substrings>`__.
-
 .. code:: yaml
 
     append_test:
@@ -249,6 +245,8 @@ or `substrings <#substrings>`__.
         test_options+: [-d, -f]
         # This will add the single value to the list of test_drives
         test_drives+: /tmp
+
+.. _tests.variables.deferred:
 
 Deferred Variables
 ------------------
@@ -272,190 +270,3 @@ when a test runs on its allocation.
   - The scheduler section.
 
     - Everything needs to be known here **before** a test is kicked off.
-
-Substrings
-----------
-
-Substrings give you the ability to insert that string once for every
-value of a contained variable. They're bracketed by ``[~`` and ``~]``.
-
-.. code:: yaml
-
-    substr_test:
-        variables:
-          dirs: ['/usr', '/root', '/opt']
-          
-        run: 
-          cmds: 'ls [~{{dirs}} ~]'
-
-This would result in a command of ``ls /usr /root /opt``. The space in
-the substring is repeated too, as would any other regular text we
-included.
-
-.. code:: yaml
-
-    super_magic_fs:
-        variables:
-          projects: [origami, fusion]
-        
-        run:
-          cmds: 'srun ./super_magic [~-w /opt/proj/{{projects}} ~] -a'
-
-This would get us a command of:
-``srun ./super_magic -w /opt/proj/origami -w /opt/proj/fusion  -a``
-
-Substring Separators
-^^^^^^^^^^^^^^^^^^^^
-
-In the above examples, the trailing space from the substring resulted in
-an extra space at the end. That's fine in most circumstances, but what
-if we need to separate the strings with something that can't be repeated
-at the end?
-
-To do that, simply insert your separator between the tilde ``~`` and
-closing square bracket ``]``. The separator can be of any length, but
-can't contain a closing square bracket.
-
-.. code:: yaml
-
-    substr_test2:
-        variables:
-          groups: [testers, supertesters]
-        
-        run:
-          cmds: 'grep --quiet "[~{{groups}}~|]" /etc/group'
-
-The command would be: ``grep --quiet "testers|supertesters" /etc/group``
-
-Multiple Variables
-^^^^^^^^^^^^^^^^^^
-
-Substrings can contain multiple variables, but only one of those
-variables can have more multiple values (or no values).
-
-.. code:: yaml
-
-    super_magic_fs:
-        variables:
-          projects: [origami, fusion]
-        
-        run:
-          cmds: 'srun ./super_magic [-w /opt/proj/{{projects}}/{{pav.user}} ] -a'
-
-If the user ``ebronte`` were running the tests, we'd get a command of:
-
-::
-
-    srun ./super_magic -w /opt/proj/origami/ebronte -w /opt/proj/fusion/ebronte -a
-
-If a single variable in a substring has no values, it's assumed to be
-the variable we want to expand,
-
-Nesting Substrings
-^^^^^^^^^^^^^^^^^^
-
-While substrings can be nested, the behavior is not particularly useful
-in its current form. Nested substring behavior is an **unstable**
-feature, as we we will likely change it in the future.
-
-Default Values
---------------
-
-Variable references may be given a default value in their references. If the
-variable isn't defined, the default is inserted directly instead. ::
-
-{{var_name|default}}
-
-This is particularly useful for providing places where inherited tests may
-insert values, but the basic test doesn't need to.
-
-.. code:: yaml
-
-    mytest:
-        run:
-            cmds:
-                - "./mytest {{options|}} -m {{mode|simple}}"
-
-    complex_test:
-        inherits_from: mytest
-
-        variables:
-            options: -a
-            mode: complex
-
-Permutations
-------------
-
-Permutations allow you to create a 'virtual' test for each permutation of
-the values of one or more variables.
-
-.. code:: yaml
-
-    permuted_test:
-        permute_on: msg, person, date
-        variables:
-          msg: ['hello', 'goodbye']
-          person: ['Paul', 'Nick']
-        run:
-          cmds: 'echo "{{msg}} {{person}} - {{date}}"'
-
-The above would result in nine virtual tests, each one echoing a
-different message.
-
-- That's 2 *users* \* 2 *people* \* 1 *date*
-
-   - ``echo "hello Paul - 07/14/19"``
-   - ``echo "hello Nick - 07/14/19"``
-   - ``echo "goodbye Paul - 07/14/19"``
-   - ``echo "goodbye Nick - 07/14/19"``
-- User comes from the 'pav.user' variable which only has a single value.
-- The tests are scheduled independently when using ``pav run``.
-- They have the same test name (permuted\_test), but different test id's and
-  run directories.
-
-Limitations
-^^^^^^^^^^^
-
--  You can't permute on 'sched' variables. They don't exist until after
-   permutations are generated.
--  You can't permute on *Deferred* variables. They can only have one
-   value, and we won't know what that is until right before the test
-   runs.
--  No attempt is made to remove duplicate tests, so if you permute on a
-   variable you don't use it will create some identical test runs.
-
-Complex Variables in Permutations
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-Complex variables are a useful way to group variables together in a
-permutation.
-
-.. code:: yaml
-
-    mytest:
-        permute_on: compiler
-        variables:
-          compiler: 
-            - {name: 'gcc',   mpi: 'openmpi',   cmd: 'mpicc',  openmp: '-fopenmp'}
-            - {name: 'intel', mpi: 'intel-mpi', cmd: 'mpiicc', openmp: '-qopenmp'}
-
-        subtitle: '{{compiler.name}}'
-        
-        build:
-          # Will result in `mpiicc -qopenmp mysrc.c`
-          cmds: '{{compiler.cmd}} {{compiler.openmp}} mysrc.c'
-        ...
-
-This would create two virtual tests, one built with gcc and one with
-intel. - The ``subtitle`` test attribute lets us give each a specific
-name. In this case ``mytest.gcc`` and ``mytest.intel``. - Note that
-using a variable multiple times **never** creates additional
-permutations.
-
-Permutations vs Combinations
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-Are they 'permutations' or 'combinations'? These words have very specific
-meaning in a mathematical sense, and our usage here can be a bit confusing.
-We are *permuting* over the *combinations* of multiple sets, and in neither
-case are we are we using the word in a purely combinatorial sense.

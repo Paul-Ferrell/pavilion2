@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 import yaml_config as yc
-from pavilion.pav_vars import var_method
+from pavilion.pavilion_variables import var_method
 from pavilion.schedulers import SchedulerPlugin
 from pavilion.schedulers import SchedulerVariables
 from pavilion.status_file import STATES, StatusInfo
@@ -15,6 +15,13 @@ from pavilion.status_file import STATES, StatusInfo
 
 class RawVars(SchedulerVariables):
     """Variables for running tests locally on a system."""
+
+    EXAMPLE = {
+        "avail_mem": "54171",
+        "cpus": "8",
+        "free_mem": "49365",
+        "total_mem": "62522",
+    }
 
     @var_method
     def cpus(self):
@@ -185,6 +192,11 @@ class Raw(SchedulerPlugin):
                 state=STATES.SCHED_ERROR,
                 note=msg)
 
+    def available(self):
+        """The raw scheduler is always available."""
+
+        return True
+
     def _schedule(self, test_obj, kickoff_path):
         """Run the kickoff script in a separate process. The job id a
         combination of the hostname and pid.
@@ -282,6 +294,7 @@ class Raw(SchedulerPlugin):
         if not self._verify_pid(pid, test.id):
             test.status.set(STATES.SCHED_CANCELLED,
                             "Canceled via pavilion.")
+            test.set_run_complete()
             return StatusInfo(
                 STATES.SCHED_CANCELLED,
                 "PID {} was terminated.".format(pid)

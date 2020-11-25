@@ -1,7 +1,7 @@
 Pavilion2
 =========
 
-Pavilion is a Python 3 (3.4+) based framework for running and analyzing
+Pavilion is a Python 3 (3.5+) based framework for running and analyzing
 tests targeting HPC systems. It provides a rich YAML-based configuration
 system for wrapping test codes and running them against various systems.
 The vast majority of the system is defined via plugins, giving users
@@ -26,11 +26,28 @@ Project goals:
    :maxdepth: 2
    :caption: Contents:
 
-   basics.rst
    install.rst
+   basics.rst
    advanced.rst
    config.rst
+   test_run_lifecycle.rst
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Test Configuration
+
    tests/index.rst
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Test Results Gathering
+
+   results/index.rst
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Plugins
+
    plugins/index.rst
 
 .. toctree::

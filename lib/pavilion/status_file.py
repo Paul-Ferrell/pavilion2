@@ -8,7 +8,10 @@ are saved as a 'state' in the status file. Each state is a single line of the
 file with a max size of 4096 bytes to ensure atomic writes.
 
 The state of a test run represents where that run is in its lifecycle. It
-does not represent whether a test passed or failed.
+does not represent whether a test passed or failed. States are ephemeral and
+asynchronous, and should generally not be used to decide to do something with a
+test run. (The only exception is the 'SCHEDULED' state, which tells Pavilion
+to ask the scheduler about its current state).
 
 Usage: ::
 
@@ -64,10 +67,16 @@ Known States:
     SCHED_ERROR = "There was a scheduler related error."
     SCHED_CANCELLED = "The job was cancelled."
     BUILDING = "The test is currently being built."
+    BUILD_CREATED = "The builder for this build was created."
+    BUILD_DEFERRED = "The build will occur on nodes."
     BUILD_FAILED = "The build has failed."
     BUILD_TIMEOUT = "The build has timed out."
     BUILD_ERROR = "An unexpected error occurred while setting up the build."
     BUILD_DONE = "The build step has completed."
+    BUILD_WAIT = "Waiting for the build lock."
+    BUILD_REUSED = "The build was reused from a prior step."
+    INFO = "This is for logging information about a test, and can occur" \
+           "within any state."
     ENV_FAILED = "Unable to load the environment requested by the test."
     PREPPING_RUN = "Performing final (on node) steps before the test run."
     RUNNING = "For when we're currently running the test."
@@ -78,6 +87,7 @@ Known States:
     RUN_DONE = "For when the run step is complete."
     RESULTS = "For when we're getting the results."
     RESULTS_ERROR = "A result parser raised an error."
+    SKIPPED = "The test has been skipped due to an invalid condition."
     COMPLETE = "For when the test is completely complete."
 
     max_length = 15
@@ -137,15 +147,46 @@ class StatusInfo:
 :ivar datetime when: A datetime object representing when this state was saved.
 """
 
+    TIME_FORMAT = '%Y-%m-%dT%H:%M:%S.%f'
+    TS_LEN = 5 + 3 + 3 + 3 + 3 + 3 + 6
+
+    LINE_MAX = 4096
+    # Maximum length of a note. They can use every byte minux the timestamp
+    # and status sizes, the spaces in-between, and the trailing newline.
+    NOTE_MAX = LINE_MAX - TS_LEN - 1 - STATES.max_length - 1 - 1
+
     def __init__(self, state, note, when=None):
 
         self.state = state
-        self.note = note
+        self.note = note.replace('\\n', '\n')
 
         if when is None:
             self.when = datetime.datetime.now()
         else:
             self.when = when
+
+    def status_line(self):
+        """Convert this to a line of text as it would be written to the
+        status file."""
+
+        # If we were given an invalid status, make the status invalid but add
+        # what was given to the note.
+        if not STATES.validate(self.state):
+            note = '({}) {}'.format(self.state, self.note)
+            state = STATES.INVALID
+        else:
+            state = self.state
+            note = self.note
+
+        when = self.when.strftime(StatusInfo.TIME_FORMAT)
+
+        note = note.replace('\n', '\\n')
+
+        # Truncate the note such that, even when encoded in utf-8, it is
+        # shorter than NOTE_MAX
+        note = note.encode()[:self.NOTE_MAX].decode('utf-8', 'ignore')
+
+        return '{} {} {}\n'.format(when, state, note).encode()
 
     def __str__(self):
         return 'Status: {s.when} {s.state} {s.note}'.format(s=self)
@@ -175,15 +216,7 @@ appends of a size such that those writes should be atomic.
 
     STATES = STATES
 
-    TIME_FORMAT = '%Y-%m-%dT%H:%M:%S.%f'
-    TS_LEN = 5 + 3 + 3 + 3 + 3 + 3 + 6
-
     LOGGER = logging.getLogger('pav.{}'.format(__file__))
-
-    LINE_MAX = 4096
-    # Maximum length of a note. They can use every byte minux the timestamp
-    # and status sizes, the spaces in-between, and the trailing newline.
-    NOTE_MAX = LINE_MAX - TS_LEN - 1 - STATES.max_length - 1 - 1
 
     def __init__(self, path):
         """Create the status file object.
@@ -214,23 +247,26 @@ could be wrong with the file format.
         line = line.decode('utf-8')
 
         parts = line.split(" ", 2)
-
-        status = StatusInfo('', '', )
+        state = ''
+        note = ''
+        when = None
 
         if parts:
             try:
-                status.when = datetime.datetime.strptime(parts.pop(0),
-                                                         self.TIME_FORMAT)
+                when = datetime.datetime.strptime(parts.pop(0),
+                                                  StatusInfo.TIME_FORMAT)
             except ValueError as err:
                 self.LOGGER.warning(
                     "Bad date in log line '%s' in file '%s': %s",
                     line, self.path, err)
 
         if parts:
-            status.state = parts.pop(0)
+            state = parts.pop(0)
 
         if parts:
-            status.note = parts.pop(0).strip()
+            note = parts.pop(0).strip()
+
+        status = StatusInfo(state, note, when=when)
 
         return status
 
@@ -261,7 +297,7 @@ could be wrong with the file format.
 """
 
         # We read a bit extra to avoid off-by-one errors
-        end_read_len = self.LINE_MAX + 16
+        end_read_len = StatusInfo.LINE_MAX + 16
 
         try:
             with self.path.open('rb') as status_file:
@@ -272,8 +308,15 @@ could be wrong with the file format.
                 else:
                     status_file.seek(-end_read_len, os.SEEK_END)
 
-                # Get the last line.
-                line = status_file.readlines()[-1]
+                lines = status_file.readlines()
+                if lines:
+                    # Get the last line.
+                    line = lines[-1]
+                else:
+                    return StatusInfo(
+                        state=STATES.INVALID,
+                        note="Status file was empty."
+                    )
 
                 return self._parse_status_line(line)
 
@@ -281,27 +324,17 @@ could be wrong with the file format.
             raise TestStatusError("Error reading status file '{}': {}"
                                   .format(self.path, err))
 
-    def set(self, state, note):
-        """Set the status.
+    def set(self, state: str, note: str) -> StatusInfo:
+        """Set the status and return the StatusInfo object.
 
-:param state: The current state.
-:param note: A note about this particular instance of the state.
-"""
+    :param state: The current state.
+    :param note: A note about this particular instance of the state.
+    """
 
-        when = datetime.datetime.now()
-        when = when.strftime(self.TIME_FORMAT)
+        stinfo = StatusInfo(state, note, when=datetime.datetime.now())
 
-        # If we were given an invalid status, make the status invalid but add
-        # what was given to the note.
-        if not STATES.validate(state):
-            note = '({}) {}'.format(state, note)
-            state = STATES.INVALID
+        status_line = stinfo.status_line()
 
-        # Truncate the note such that, even when encoded in utf-8, it is
-        # shorter than NOTE_MAX
-        note = note.encode('utf-8')[:self.NOTE_MAX].decode('utf-8', 'ignore')
-
-        status_line = '{} {} {}\n'.format(when, state, note).encode('utf-8')
         try:
             with self.path.open('ab') as status_file:
                 status_file.write(status_line)
@@ -309,6 +342,8 @@ could be wrong with the file format.
             raise TestStatusError("Could not write status line '{}' to status "
                                   "file '{}': {}"
                                   .format(status_line, self.path, err))
+
+        return stinfo
 
     def __eq__(self, other):
         return (

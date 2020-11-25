@@ -3,11 +3,14 @@
 # pylint: disable=W0603
 
 import argparse
+import errno
 import inspect
+import io
 import logging
 import sys
 
 from pavilion import arguments
+from pavilion import output
 from yapsy import IPlugin
 
 _COMMANDS = {}
@@ -36,13 +39,14 @@ def add_command(command):
 
     global _COMMANDS
 
-    if command.name not in _COMMANDS:
-        _COMMANDS[command.name] = command
-    else:
-        raise RuntimeError(
-            "Multiple commands of the same name are not allowed to exist. "
-            "command.{c1.name} found at both {c1.path} and {c2.path}."
-            .format(c1=_COMMANDS[command.name], c2=command))
+    for name in command.aliases:
+        if name not in _COMMANDS:
+            _COMMANDS[name] = command
+        else:
+            raise RuntimeError(
+                "Multiple commands of the same name are not allowed to exist. "
+                "command.{c1.name} found at both {c1.path} and {c2.path}."
+                .format(c1=_COMMANDS[name], c2=command))
 
 
 def get_command(command_name):
@@ -57,9 +61,13 @@ def get_command(command_name):
 
 
 class Command(IPlugin.IPlugin):
-    """Provides a pavilion command via a plugin."""
+    """Provides a pavilion command via a plugin.
 
-    def __init__(self, name, description, short_help=None, aliases=None):
+    :ivar argparse.ArgumentParser parser: The plugin's argument parser object.
+    """
+
+    def __init__(self, name, description, short_help=None, aliases=None,
+                 sub_commands=False):
         """Initialize this command. This should be overridden by subclasses, to
         set reasonable values. Multiple commands of the same name are not
         allowed to exist.
@@ -72,19 +80,43 @@ class Command(IPlugin.IPlugin):
             when doing a 'pav --help'. If this is None, the command won't
             be listed.
         :param list aliases: A list of aliases for the command.
+        :param bool sub_commands: Enable the standardized way of adding sub
+            commands.
         """
         super().__init__()
+
+        if aliases is None:
+            aliases = []
+
+        aliases = [name] + aliases.copy()
 
         self.logger = logging.getLogger('command.' + name)
         self.name = name
         self.file = inspect.getfile(self.__class__)
         self.description = description
         self.short_help = short_help
-        self._aliases = aliases if aliases is not None else []
+        self.aliases = aliases
 
         # These are to allow tests to redirect output as needed.
         self.outfile = sys.stdout
         self.errfile = sys.stderr
+
+        self.sub_cmds = {}
+        if sub_commands:
+            self._inventory_sub_commands()
+
+        self._parser = None
+
+
+    def _inventory_sub_commands(self):
+        """Find all the sub commands and populate the sub_cmds dict."""
+
+        # Walk the class dictionary and add any functions with aliases
+        # to our dict of commands under each listed alias.
+        for func in self.__class__.__dict__.values():
+            if callable(func) and hasattr(func, 'aliases'):
+                for alias in func.aliases:
+                    self.sub_cmds[alias] = func
 
     def _setup_arguments(self, parser):
         """Setup the commands arguments in the Pavilion argument parser. This
@@ -120,13 +152,16 @@ case that includes:
         # help is None. If we don't want that, we have to init without 'help'.
         if self.short_help is None:
             parser = sub_parser.add_parser(self.name,
-                                           aliases=self._aliases,
+                                           aliases=self.aliases,
                                            description=self.description)
         else:
             parser = sub_parser.add_parser(self.name,
-                                           aliases=self._aliases,
+                                           aliases=self.aliases,
                                            description=self.description,
                                            help=self.short_help)
+
+        # Save the argument parser, as it can come in handy.
+        self._parser = parser
 
         self._setup_arguments(parser)
 
@@ -149,9 +184,81 @@ case that includes:
         raise NotImplementedError(
             "Command plugins must override the 'run' method.")
 
+    def _run_sub_command(self, pav_cfg, args):
+        """Find and run the subcommand."""
+
+        cmd_name = args.sub_cmd
+
+        if cmd_name is None:
+            output.fprint(
+                "You must provide a sub command '{}'.".format(cmd_name),
+                color=output.RED, file=self.errfile)
+            self._parser.print_help(file=self.errfile)
+            return errno.EINVAL
+
+        if cmd_name not in self.sub_cmds:
+            raise RuntimeError("Invalid sub-cmd '{}'".format(cmd_name))
+
+        cmd_result = self.sub_cmds[cmd_name](self, pav_cfg, args)
+        return 0 if cmd_result is None else cmd_result
+
     def __repr__(self):
         return '<{} from file {} named {}>'.format(
             self.__class__.__name__,
             self.file,
             self.name
         )
+
+    def silence(self):
+        """Convert the command to use string IO for its output and error
+        output."""
+        self.outfile = io.StringIO()
+        self.errfile = io.StringIO()
+
+    def clear_output(self):
+        """Reset the output io buffers for this command."""
+
+        if not isinstance(self.outfile, io.StringIO):
+            raise RuntimeError("Only silenced commands can be cleared.")
+
+        self.outfile.seek(0)
+        data = self.outfile.read()
+        self.outfile.seek(0)
+        self.outfile.truncate(0)
+
+        self.errfile.seek(0)
+        err_data = self.errfile.read()
+        self.errfile.seek(0)
+        self.errfile.truncate(0)
+
+        return data, err_data
+
+    @property
+    def path(self):
+        """The path to the object that defined this instance."""
+
+        return inspect.getfile(self.__class__)
+
+
+def sub_cmd(*aliases):
+    """Tag this given function as a sub_cmd, and record its aliases."""
+
+    def tag_aliases(func):
+        """Attach all the aliases to the given function, but return the
+        function itself. The function name, absent leading underscores and
+        without a trailing '_cmd', is added by default."""
+        name = func.__name__
+
+        while name.startswith('_'):
+            name = name[1:]
+
+        if name.endswith('_cmd'):
+            name = name[:-4]
+
+        func.aliases = [name]
+        for alias in aliases:
+            func.aliases.append(alias)
+
+        return func
+
+    return tag_aliases

@@ -1,9 +1,26 @@
+"""This library manages the initialization of all the different Pavilion
+plugin types. It also contains most of the included plugins themselves.
+
+Plugin categories need to be registered in the 'PLUGIN_CATEGORIES' dictionary
+for Pavilion to recognize them.
+
+- Plugin base classes must all inherit from yapsy's IPlugin.IPlugin class
+- Plugin base *modules* must contain a ``__reset()`` method that
+  effectively ``deactivates()`` all plugins of that type.
+- Plugin base *modules* **may** also contain a ``register_core_plugins()``
+  to find, initialize, and ``activate()`` all plugins of that type
+  that aren't included as separate yapsy plugin modules.
+"""
+
+import inspect
 import logging
+import traceback
 from pathlib import Path
 
 from pavilion.commands import Command
+from pavilion.expression_functions import FunctionPlugin
 from pavilion.module_wrapper import ModuleWrapper
-from pavilion.result_parsers import ResultParser
+from pavilion.result.parsers import ResultParser
 from pavilion.schedulers import SchedulerPlugin
 from pavilion.system_variables import SystemPlugin as System
 from yapsy import PluginManager
@@ -13,11 +30,12 @@ LOGGER = logging.getLogger('plugins')
 _PLUGIN_MANAGER = None
 
 PLUGIN_CATEGORIES = {
-    'module': ModuleWrapper,
     'command': Command,
-    'sys': System,
-    'sched': SchedulerPlugin,
+    'function': FunctionPlugin,
+    'module': ModuleWrapper,
     'result': ResultParser,
+    'sched': SchedulerPlugin,
+    'sys': System,
 }
 
 __all__ = [
@@ -49,14 +67,10 @@ def initialize_plugins(pav_cfg):
         return
 
     # Always look here for plugins
-    plugin_dirs = [Path(__file__).parent]
+    plugin_dirs = [Path(__file__).parent.as_posix()]
     # And in all the user provided plugin directories.
     for cfg_dir in pav_cfg.config_dirs:
-        plugin_dirs.append(cfg_dir/'plugins')
-
-    # Python 3.4
-    # os.path can't handle Path objects
-    plugin_dirs = [p.as_posix() for p in plugin_dirs]
+        plugin_dirs.append((cfg_dir/'plugins').as_posix())
 
     try:
         pman = PluginManager.PluginManager(directories_list=plugin_dirs,
@@ -77,8 +91,14 @@ def initialize_plugins(pav_cfg):
         try:
             plugin.plugin_object.activate()
         except Exception as err:
-            raise PluginError("Error activating plugin {name}: {err}"
-                              .format(name=plugin.name, err=err))
+            raise PluginError("Error activating plugin {name}:\n{err}\n{tb}"
+                              .format(name=plugin.name, err=err,
+                                      tb=traceback.format_exc()))
+
+    # Some plugin types have core plugins that are built-in.
+    for _, cat_obj in PLUGIN_CATEGORIES.items():
+        if hasattr(cat_obj, 'register_core'):
+            cat_obj.register_core()
 
     _PLUGIN_MANAGER = pman
 
@@ -104,8 +124,6 @@ def list_plugins():
 def _reset_plugins():
     """Reset the plugin system. This functionality is for unittests,
     and should never be used in Pavilion proper."""
-
-    import inspect
 
     global _PLUGIN_MANAGER  # pylint: disable=W0603
 

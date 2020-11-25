@@ -7,20 +7,23 @@ import inspect
 import os
 import pprint
 import tempfile
+import time
 import types
 import unittest
 from hashlib import sha1
 from pathlib import Path
+from typing import List
 
 from pavilion import arguments
 from pavilion import config
-from pavilion import pav_vars
+from pavilion import dir_db
+from pavilion import pavilion_variables
 from pavilion import system_variables
-from pavilion.test_run import TestRun
-from pavilion.test_config.file_format import TestConfigLoader
-from pavilion.test_config import VariableSetManager
-from pavilion.test_config import resolve_config
 from pavilion.output import dbg_print
+from pavilion.test_config import VariableSetManager
+from pavilion.test_config import resolver
+from pavilion.test_config.file_format import TestConfigLoader
+from pavilion.test_run import TestRun
 
 
 class PavTestCase(unittest.TestCase):
@@ -48,12 +51,24 @@ base class.
 
     PAV_CONFIG_PATH = TEST_DATA_ROOT/'pav_config_dir'/'pavilion.yaml'
 
-    TEST_URL = 'https://github.com/lanl/Pavilion/archive/master.zip'
+    TEST_URL = ('https://raw.githubusercontent.com/hpc/'
+                'pavilion2/2.1.1/README.md')
+    TEST_URL2 = ('https://raw.githubusercontent.com/hpc/'
+                 'pavilion2/2.1.1/RELEASE.txt')
+    TEST_URL_HASH = '0a3ad5bec7c8f6929115d33091e53819ecaca1ae'
 
     # Skip any tests that match these globs.
     SKIP = []
     # Only run tests that match these globs.
     ONLY = []
+
+    # Working dirs
+    WORKING_DIRS = [
+        'builds',
+        'test_runs',
+        'series',
+        'users',
+        ]
 
     def __init__(self, *args, **kwargs):
         """Setup the pav_cfg object, and do other initialization required by
@@ -93,18 +108,16 @@ base class.
 
         self.pav_cfg.pav_cfg_file = cfg_path
 
-        self.pav_cfg.pav_vars = pav_vars.PavVars()
+        self.pav_cfg.pav_vars = pavilion_variables.PavVars()
+
+        if not self.pav_cfg.working_dir.exists():
+            self.pav_cfg.working_dir.mkdir(parents=True)
 
         # Create the basic directories in the working directory
-        for path in [
-                self.pav_cfg.working_dir,
-                self.pav_cfg.working_dir/'builds',
-                self.pav_cfg.working_dir/'test_runs',
-                self.pav_cfg.working_dir/'series',
-                self.pav_cfg.working_dir/'users',
-                self.pav_cfg.working_dir/'downloads']:
+        for path in self.WORKING_DIRS:
+            path = self.pav_cfg.working_dir/path
             if not path.exists():
-                os.makedirs(str(path), exist_ok=True)
+                path.mkdir()
 
         self.tmp_dir = tempfile.TemporaryDirectory()
 
@@ -279,6 +292,8 @@ though."""
             'timeout': '300',
         },
         'slurm': {},
+        'result_parse': {},
+        'result_evaluate': {},
     }
 
     def _quick_test_cfg(self):
@@ -305,7 +320,37 @@ The default config is: ::
 
         return cfg
 
+    def _load_test(self, name: str, host: str = 'this',
+                   modes: List[str] = None,
+                   build=True, finalize=True) -> List[TestRun]:
+        """Load the named test config from file. Returns a list of the
+        resulting configs."""
+
+        if modes is None:
+            modes = []
+
+        res = resolver.TestConfigResolver(self.pav_cfg)
+        test_cfgs = res.load([name], host, modes)
+
+        tests = []
+        for test_cfg, var_man in test_cfgs:
+            test = TestRun(self.pav_cfg, test_cfg, var_man=var_man)
+
+            if build:
+                test.build()
+
+            if finalize:
+                fin_sys = system_variables.SysVarDict(unique=True)
+                fin_var_man = VariableSetManager()
+                fin_var_man.add_var_set('sys', fin_sys)
+                test.finalize(fin_var_man)
+
+            tests.append(test)
+
+        return tests
+
     __config_lines = pprint.pformat(QUICK_TEST_BASE_CFG).split('\n')
+    # Code analysis indicating format isn't found for 'bytes' is a Pycharm bug.
     _quick_test_cfg.__doc__ = _quick_test_cfg.__doc__.format(
         '\n'.join(['    ' + line for line in __config_lines]))
     del __config_lines
@@ -329,7 +374,9 @@ The default config is: ::
 
         cfg = copy.deepcopy(cfg)
 
-        cfg = TestConfigLoader().validate(cfg)
+        loader = TestConfigLoader()
+        cfg = loader.validate(loader.normalize(cfg))
+
         cfg['name'] = name
 
         var_man = VariableSetManager()
@@ -339,12 +386,14 @@ The default config is: ::
         if sched_vars is not None:
             var_man.add_var_set('sched', sched_vars)
 
-        cfg = resolve_config(cfg, var_man, [])
+        var_man.resolve_references()
+
+        cfg = resolver.TestConfigResolver.resolve_test_vars(cfg, var_man)
 
         test = TestRun(
-            self.pav_cfg,
-            cfg,
-            var_man,
+            pav_cfg=self.pav_cfg,
+            config=cfg,
+            var_man=var_man,
         )
 
         if build:
@@ -355,6 +404,39 @@ The default config is: ::
             fin_var_man.add_var_set('sys', fin_sys)
             test.finalize(fin_var_man)
         return test
+
+    def wait_tests(self, working_dir: Path, timeout=5):
+        """Wait on all the tests under the given path to complete.
+
+        :param working_dir: The path to a working directory.
+        :param timeout: How long to wait before giving up.
+        """
+
+        def is_complete(path: Path):
+            """Return True if test is complete."""
+
+            return (path/TestRun.COMPLETE_FN).exists()
+
+        runs_dir = working_dir / 'test_runs'
+        end_time = time.time() + timeout
+        while time.time() < end_time:
+
+            completed = [is_complete(test)
+                         for test in dir_db.select(runs_dir)[0]]
+
+            if not completed:
+                self.fail("No tests started.")
+
+            if all(completed):
+                break
+            else:
+                time.sleep(0.1)
+                continue
+        else:
+            raise TimeoutError(
+                "Waiting on tests: {}"
+                .format(test.name for test in dir_db.select(runs_dir)[0]
+                        if is_complete(test)))
 
 
 class ColorResult(unittest.TextTestResult):
@@ -374,9 +456,11 @@ class ColorResult(unittest.TextTestResult):
 
     def __init__(self, *args, **kwargs):
         self.stream = None
+        self.showAll = None
         super().__init__(*args, **kwargs)
 
     def startTest(self, test):
+        """Write out the test description (with shading)."""
         super().startTest(test)
         if self.showAll:
             self.stream.write(self.GREY)
@@ -386,21 +470,25 @@ class ColorResult(unittest.TextTestResult):
             self.stream.flush()
 
     def addSuccess(self, test):
+        """Write the success text in green."""
         self.stream.write(self.GREEN)
         super().addSuccess(test)
         self.stream.write(self.COLOR_RESET)
 
     def addFailure(self, test, err):
+        """Write the Failures in magenta."""
         self.stream.write(self.MAGENTA)
         super().addFailure(test, err)
         self.stream.write(self.COLOR_RESET)
 
     def addError(self, test, err):
+        """Write errors in red."""
         self.stream.write(self.RED)
         super().addError(test, err)
         self.stream.write(self.COLOR_RESET)
 
     def addSkip(self, test, reason):
+        """Note skips in cyan."""
         self.stream.write(self.CYAN)
         super().addSkip(test, reason)
         self.stream.write(self.COLOR_RESET)

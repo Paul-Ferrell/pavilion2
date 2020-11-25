@@ -1,13 +1,18 @@
-import logging
+"""Given a pre-existing test run, runs the test in the scheduled
+environment."""
 
+import logging
+import traceback
+
+from pavilion import result
 from pavilion import output
 from pavilion import commands
-from pavilion import result_parsers
 from pavilion import schedulers
 from pavilion import system_variables
 from pavilion.test_config import VariableSetManager
 from pavilion.test_run import TestRun, TestRunError
 from pavilion.status_file import STATES
+from pavilion.permissions import PermissionsManager
 
 
 class _RunCommand(commands.Command):
@@ -36,22 +41,60 @@ class _RunCommand(commands.Command):
             raise
 
         try:
-            self._run(pav_cfg, test)
+            sched = self._get_sched(test)
+
+            var_man = self._get_var_man(test, sched)
+
+            try:
+                test.finalize(var_man)
+            except Exception as err:
+                test.status.set(
+                    STATES.RUN_ERROR,
+                    "Unexpected error finalizing test\n{}\n"
+                    "See 'pav log kickoff {}' for the full error."
+                    .format(err.args[0], test.id))
+                raise
+
+            try:
+                if not test.build_local:
+                    if not test.build():
+                        self.logger.warning(
+                            "Test {t.id} failed to build:"
+                        )
+
+            except Exception:
+                test.status.set(
+                    STATES.BUILD_ERROR,
+                    "Unknown build error. Refer to the kickoff log.")
+                raise
+
+            if not test.build_only:
+                return self._run(pav_cfg, test, sched)
         finally:
             test.set_run_complete()
 
-    def _run(self, pav_cfg, test):
-        """Run an already prepped test in the current environment.
+    @staticmethod
+    def _get_sched(test):
+        """Get the scheduler for the given test.
+        :param TestRun test: The test.
         """
 
         try:
-            sched = schedulers.get_plugin(test.scheduler)
+            return schedulers.get_plugin(test.scheduler)
         except Exception:
             test.status.set(STATES.BUILD_ERROR,
                             "Unknown error getting the scheduler. Refer to "
                             "the kickoff log.")
             raise
 
+    @staticmethod
+    def _get_var_man(test, sched):
+        """Get the variable manager for the given test.
+
+        :param TestRun test: The test run object
+        :param sched: The scheduler for this test.
+        :rtype VariableSetManager
+        """
         # Re-add var sets that may have had deferred variables.
         try:
             var_man = VariableSetManager()
@@ -61,26 +104,19 @@ class _RunCommand(commands.Command):
         except Exception:
             test.status.set(STATES.RUN_ERROR,
                             "Unknown error getting pavilion variables at "
-                            "run time.")
+                            "run time. See'pav log kickoff {}' for the "
+                            "full error.".format(test.id))
             raise
 
-        try:
-            test.finalize(var_man)
-        except Exception:
-            test.status.set(STATES.RUN_ERROR,
-                            "Unknown error finalizing test.")
-            raise
+        return var_man
 
-        try:
-            if test.config['build']['on_nodes'] in ['true', 'True']:
-                if not test.build():
-                    self.logger.warning(
-                        "Test {t.id} failed to build:"
-                    )
-        except Exception:
-            test.status.set(STATES.BUILD_ERROR,
-                            "Unknown build error. Refer to the kickoff log.")
-            raise
+    def _run(self, pav_cfg, test, sched):
+        """Run an already prepped test in the current environment.
+        :param pav_cfg: The pavilion configuration object.
+        :param TestRun test: The test to run
+        :param sched: The scheduler we're running under.
+        :return:
+        """
 
         # Optionally wait on other tests running under the same scheduler.
         # This depends on the scheduler and the test configuration.
@@ -102,34 +138,37 @@ class _RunCommand(commands.Command):
             sched.unlock_concurrency(lock)
 
         try:
-            rp_errors = []
             # Make sure the result parsers have reasonable arguments.
             # We check here because the parser code itself will likely assume
             # the args are valid form _check_args, but those might not be
-            # checkable before kickoff due to deferred variables.
+            # check-able before kickoff due to deferred variables.
             try:
-                result_parsers.check_args(test.config['results'])
-            except TestRunError as err:
-                rp_errors.append(str(err))
-
-            if rp_errors:
-                for msg in rp_errors:
-                    test.status.set(STATES.RESULTS_ERROR, msg)
-                test.set_run_complete()
+                result.check_config(test.config['result_parse'],
+                                    test.config['result_evaluate'])
+            except result.ResultError as err:
+                test.status.set(
+                    STATES.RESULTS_ERROR,
+                    "Error checking result parser configs: {}"
+                    .format(err.args[0]))
                 return 1
 
-            results = test.gather_results(run_result)
-        except result_parsers.ResultParserError as err:
-            self.logger.error("Unexpected error gathering results: %s", err)
+            with PermissionsManager(test.results_log,
+                                    group=test.group, umask=test.umask), \
+                    test.results_log.open('w') as log_file:
+                results = test.gather_results(run_result, log_file=log_file)
+
+        except Exception as err:
+            self.logger.error("Unexpected error gathering results: \n%s",
+                              traceback.format_exc())
             test.status.set(STATES.RESULTS_ERROR,
-                            "Error parsing results: {}".format(err))
-            return 1
+                            "Unexpected error parsing results: {}. (This is a "
+                            "bug, you should report it.)"
+                            "See 'pav log kickoff {}' for the full error."
+                            .format(err, test.id))
+            raise
 
         try:
             test.save_results(results)
-
-            result_logger = logging.getLogger('results')
-            result_logger.info(output.json_dumps(results))
         except Exception:
             test.status.set(
                 STATES.RESULTS_ERROR,

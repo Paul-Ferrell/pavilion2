@@ -1,8 +1,12 @@
+
+.. _installing-pavilion:
+.. _install:
+
 Installing Pavilion
 ===================
 
 Installing Pavilion is mostly a matter of placing it's source somewhere,
-providing it's (few) dependencies, and creating a pavilion.yaml config
+providing its (few) dependencies, and creating a pavilion.yaml config
 file.
 
 .. contents::
@@ -12,8 +16,9 @@ Requirements
 
 Pavilion has very few dependencies and requirements:
 
-- Python 3.4 or newer
-- A writeable space on a filesystem shared across all (tested) hosts in each cluster.
+- Python 3.5 or newer
+- A writeable space on a filesystem shared across all (tested) hosts in
+  each cluster. (Assuming you're scheduling jobs across a cluster).
 
   - The path to this directory must be consistent across all cluster hosts.
   - It must support atomic file creation and appends of < 4kb.
@@ -26,7 +31,7 @@ Filesystems
 
 Pavilion works by recursively running itself in different modes at
 different points in the testing process. This means certain paths, like
-the Pavilion **root directory**, **working directory**, and used
+the Pavilion **source directory**, **working directory**, and used
 **config directories** must have paths that are consistent across the
 nodes and front-ends of any given system.
 
@@ -40,6 +45,16 @@ to ``~/.pavilion/``).
 - Both of these requirements are probably already satisfied by one or more of
   your cluster NFS partitions. Lustre filesystems are not recommended, mostly
   due to the type of load Pavilion presents to these.
+
+Testing Filesystems
+~~~~~~~~~~~~~~~~~~~
+
+If you're unsure if your shared filesystem is reliable, there's a test for
+that in `test/utils`.
+
+.. code-block:: bash
+
+    $ python3 lock_test.py --help
 
 Result Log
 ~~~~~~~~~~
@@ -55,7 +70,7 @@ We recommend the following directory structure for Pavilion.
 
 - ``<root>/pavilion/src`` - Clone/install pavilion here.
 - ``<root>/pavilion/config`` - Your pavilion configuration files. See
-  '`configuring pavilion <config.html>`__'.
+  :ref:`config`.
 - ``<root>/pavilion/working_dir`` - Where test runs and builds will be written.
 
 The ``<root>/pavilion/config`` directory will contain all of your site
@@ -80,6 +95,23 @@ starts with a git pull of the latest release of Pavilion.
 
 You can also simply download and extract the source.
 
+.. _RELEASE.txt: _static/RELEASE.txt
+
+Releases
+~~~~~~~~
+
+You should probably pick the latest Pavilion *release* when installing
+Pavilion for a couple reasons.
+
+ 1) While we try to maintain backwards compatibility as much as possible,
+    the reality is that every release contains several major compatibility
+    breaks both for test configurations and plugins. These are documented
+    per-release in the `RELEASE.txt`_ file.
+ 2) We run a large bevy of unit tests against every change in Pavilion, but
+    each release is used in production before it is actually tagged. This
+    often reveals bugs, regressions, and practical usage issues. We fix those
+    issues, then tag the release. Bugfix releases are provided as needed.
+
 Dependencies
 ------------
 
@@ -91,10 +123,10 @@ supported and tests versions for each are recorded in ``requirements.txt``.
 
 -  `yaml\_config <https://github.com/lanl/yaml_config>`__ **(required)**
    - Used to define the test and pavilion configurations.
--  `**yc\_yaml** <https://github.com/pflarr/yc_yaml>`__ **(required)** - A
-   modified pyyaml used by yaml\_config.
--  `**yapsy** <http://yapsy.sourceforge.net/>`__ **(required)** - The basis
+-  `yapsy <http://yapsy.sourceforge.net/>`__ **(required)** - The basis
    for Pavilion's plugin architecture.
+-  `lark <https://github.com/lark-parser/lark>`__ **(required)** - Used for
+   Pavilion string value and expression parsing.
 -  `requests <https://pypi.org/project/requests/2.7.0/>`__ - Used for
    automatic downloads of test source files. This feature is disabled in
    the absence of this library, and tests that use it will fail with an
@@ -126,22 +158,6 @@ correct sub-directory for each of these. If you would prefer to use the
 system version of a particular dependency, simply delete the
 corresponding softlink in your install.
 
-pytz
-''''
-
-Pytz is special, in that it has to be built. The build process is
-simple, and requires nothing more than make and gcc. While Pavilion
-doesn't actually use the compiled components of pytz, the python
-components are dynamically generated and required.
-
-.. code:: bash
-
-    pushd lib/sub_repos/pytz
-    make build
-
-The softlink in lib already points to the expected location of the built
-pytz.
-
 virtualenv and pip
 ^^^^^^^^^^^^^^^^^^
 
@@ -164,17 +180,17 @@ It comes with a couple of caveats:
 
     pushd /your/pavilion/install
     VENV_PATH=/your/virtualenv/path
-    # Setup a virtual environment 
+    # Setup a virtual environment
     virtualenv -p /usr/lib/python3 ${VENV_PATH}
     # Update pip, because older versions sometimes have issues.
     ${VENV_PATH}/bin/pip install --update pip
-    # Install all the pavilion requirements. 
+    # Install all the pavilion requirements.
     ${VENV_PATH}/bin/pip install -f requirements.txt
     # This has to be run before pav will work.
     ${VENV_PATH}/bin/activate
 
 Environment Modules
-===================
+-------------------
 
 Pavilion uses the ``module`` command to load modules for tests. It will work
 with either lmod or the tcl based 'environment modules' systems. This is
@@ -183,8 +199,7 @@ that supports multiple compilers and conflicting builds of libraries.
 
 It is assumed that the module environment is set up before you run Pavilion. If
 you need to set up this environment separately on allocations, use the
-'env_setup' option in the
-`general Pavilion configuration <config.rst>`__ to add the commands
+'env_setup' option in the :ref:`config` to add the commands
 to do so.
 
 

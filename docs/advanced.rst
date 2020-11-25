@@ -1,13 +1,15 @@
 Pavilion Advanced Usage
 =======================
 
-This page an overview of some of the advanced features of Pavilion, to
+This page is an overview of some of the advanced features of Pavilion, to
 give you a better idea of what it's capable of.
 
 .. contents::
 
 Mode Configs
 ------------
+
+*Full Docs:* :ref:`tests.format.mode`
 
 In addition to host config files, you can provide mode config files that
 you can apply to any test when you run it. They have the same format as
@@ -16,15 +18,15 @@ the host configs, but multiple can be provided per test.
 For example, the following mode file could be used to set a particular
 set of slurm vars:
 
-.. code:: yaml
+.. code-block:: yaml
 
-    slurm: 
+    slurm:
         account: tester
         partition: post-dst
 
-::
+.. code-block:: bash
 
-    pav run -m tester -f post_dst_tests.txt
+    $ pav run -m tester -f post_dst_tests.txt
 
 Advanced Test Configs
 ---------------------
@@ -35,9 +37,10 @@ variables.
 
 Variables
 ~~~~~~~~~
+*Full Docs:* :ref:`tests.variables`
 
-Test configs can contain variable references within their config values
-(all of which are read as strings by Pavilion).
+Test configs can contain *expressions* within their config values that
+reference and manipulate variables.
 
 These variables come from a variety of sources (this is also the
 resolution order):
@@ -50,21 +53,20 @@ resolution order):
 Variable names must be in lowercase and start with a letter, but may
 contain numbers, dashes and underscores.
 
-.. code:: yaml
+.. code-block:: yaml
 
     mytest:
       scheduler: slurm
-      
+
       variables:
         sleep_time: 24
 
       run:
         cmds:
-          - "sleep {{var.sleep_time}}"
-          - 'echo "Slept {{sleep_time}} seconds on node ${sched.node_num}."'
+          - "sleep {{var.sleep_time + 12}}"
+          - 'echo "Slept {{sleep_time + 12}} seconds on node
+             {{sched.node_num}}."'
 
-Variable References
-^^^^^^^^^^^^^^^^^^^
 
 -  Use double curly brackets ``{{var.myvar}}``.
 -  Variable category is optional. ``{{myvar}}`` is fine.
@@ -73,8 +75,8 @@ Variable References
    you need to make the reference explicit.
 -  You'll also see ``{{myvar.2}}`` list references, ``{{myvar.foo}}``
    attribute references, and the combination of the two
-   ``{{myvar.1.bar}}``. See the full
-   `variable documentation <tests/variables.html>`__ for more info.
+   ``{{myvar.1.bar}}``.
+
 
 Listing Variables
 ^^^^^^^^^^^^^^^^^
@@ -89,16 +91,16 @@ from various sources.
 
     pav show sys_vars
 
-     Available System Variables                                                                    
+     Available System Variables
     -----------+-------------------------------------+---------------------------------------------
-     Name      | Value                               | Description                                 
+     Name      | Value                               | Description
     -----------+-------------------------------------+---------------------------------------------
-     host_arch | <deferred>                          | The current host's architecture.            
-     host_name | <deferred>                          | The target host's hostname.                 
-     host_os   | <deferred>                          | The target host's OS info (name, version).  
-     sys_arch  | x86_64                              | The system architecture.                    
-     sys_host  | myhost                              | The system (kickoff) hostname.              
-     sys_name  | myhost                              | The system name (not necessarily hostname). 
+     host_arch | <deferred>                          | The current host's architecture.
+     host_name | <deferred>                          | The target host's hostname.
+     host_os   | <deferred>                          | The target host's OS info (name, version).
+     sys_arch  | x86_64                              | The system architecture.
+     sys_host  | myhost                              | The system (kickoff) hostname.
+     sys_name  | myhost                              | The system name (not necessarily hostname).
      sys_os    | {'name': 'sles', 'version': '12.3'} | The system os info (name, version).
 
 Deferred Variables
@@ -115,49 +117,53 @@ in those sections. Namely, this includes the ``build`` and various
 scheduler config sections, as well as root level config values. Pavilion
 will tell you when you make this mistake.
 
-More Info
-^^^^^^^^^
+Expressions
+~~~~~~~~~~~
 
-Variables are a powerful feature of pavilion, and the above just
-scratches the surface. See the `variables <tests/variables.html>`__
-section of the docs for detailed information.
+*Full Docs:* :ref:`tests.values.expressions`
+
+The double curly brace sections that can contain variables are really fully
+capable :ref:`tests.values.expressions`, and can contain math operations and
+function calls. Functions are provided via
+:ref:`plugins <plugins.expression_functions>`.
+
+.. code-block:: yaml
+
+    mytest:
+      variables:
+        sleep_time: 24
+
+      run:
+        cmds:
+          - "sleep {{ max([var.sleep_time/4, 1, sleep_time + 1]) }}"
+
 
 Inheritance
 ~~~~~~~~~~~
 
+*Full Docs:* :ref:`tests.format.inheritance`
+
 Tests within a single test suite file can inherit from each other.
 
-.. code:: yaml
+.. code-block:: yaml
 
-    super_magic:
-        summary: Run all standard super_magic tests.
-        scheduler: slurm
-        build:
-          modules:
-            - gcc
-            - openmpi
-          cmds:
-            - mpicc -o super_magic super_magic.c
-          
+    test_a:
+        variables:
+            key1: "apple"
+            key2: "pear"
+
         run:
-          modules: 
-            - gcc
-            - openmpi
-          cmds:
-            - echo "Running supermagic"
-            - srun ./supermagic -a 
-        
-        results:
-          ... # Various result parser configurations.
-        
-    # This gets all the attributes of supermagic, but overwrites the summary
-    # and the test commands.
-    super_magic-fs:
-        summary: Run all standard super_magic tests, and the write test too.
-        inherits_from: super_magic
-        run:
-          cmds:
-            - srun ./supermagic -a -w /mnt/projects/myproject/
+            cmds: 'echo "{{key1}} {{key2}}"'
+
+    test_b:
+        inherits_from: test_a
+
+        variables:
+            key2: "banana"
+
+The first test, 'test_a', would echo "apple pear", while the second would
+echo "apple banana".
+
 
 Rules of Inheritance
 ^^^^^^^^^^^^^^^^^^^^
@@ -182,7 +188,7 @@ values to a variable, and then create test 'permutations' over those values.
 Each permutation of a test is an instance of that test where that variable takes
 on just one of the values from your variable.
 
-.. code:: yaml
+.. code-block:: yaml
 
     nbodies:
 
@@ -206,9 +212,33 @@ This will create six test configurations (and thus six test runs), one for each
  - etc.
 
 You also can permute over multiple variables at once, producing a test run for
-each possible permutation of values. See
-`Test Permutations <tests/variables.html#permutations>`__
+each possible permutation of values. See :ref:`tests.permutations`
 for more info.
+
+Skip Conditions
+~~~~~~~~~~~~~~~
+
+*Full Docs:* :ref:`tests.skip_conditions`
+
+The ``only_if`` and ``not_if`` sections of the test config allow users
+to specify the conditions under which a test should run. Tests are 'SKIPPED'
+unless each of their ``only_if`` conditions (and none if their ``not_if``
+conditions) match. The conditions are ``key:value/s`` pairs; the key is a
+Pavilion variable, and the value/s are one or more items that the 'resolved'
+value of the Pavilion variable might match to.
+
+.. code:: yaml
+
+    test: # This test uses the directives only_if and not_if.
+        only_if:
+            # For this test to run, 'user' must be one of the values below.
+            "{{user}}": ['calvin', 'paul', 'nick', 'francine']
+        not_if:
+            # For this test to run 'sys_arch' must not be x86_64
+            "{{sys_arch}}": 'x86_64'
+        run:
+            cmds:
+                - 'echo "Helloworld"'
 
 Environment
 -----------
@@ -219,10 +249,16 @@ environment (or lmod) modules.
 Environment Variables
 ~~~~~~~~~~~~~~~~~~~~~
 
-You can set/unset environment variables in your test configs, and use
-them in your scripts.
+*Full Docs:* :ref:`tests.env.variables`
 
-.. code:: yaml
+You can set environment variables in your test scripts using the
+'env' section under both 'run' and 'build'. This will cause the variables to
+be exported within the generated run or build script, where they can be used
+by commands run as part of that script. Note that environment variables are
+**only** usable in the *cmds* and *env* sections, as these are written
+directly into the build and run scripts.
+
+.. code-block:: yaml
 
     python_test:
         run:
@@ -231,29 +267,45 @@ them in your scripts.
             PYTHONPATH:
             # Use a different python home
             PYTHONHOME: /home/mario/python_root/
+            # Specify a python version
+            PY_VERS: 3
           cmds:
-            - 'python${PY_VERS} -c "print(\"hello world\")"'
+            - python${PY_VERS} -c "print('hello world')"
+
+This will result in a run script that looks like:
+
+.. code-block:: bash
+
+    #!/bin/bash
+
+    unset PYTHONPATH
+    export PYTHONHOME=/home/mario/python_root
+    export PY_VERS=3
+
+    python${PY_VERS} -c "print ('hello world')"
 
 Modules
 ~~~~~~~
+
+*Full Docs:* :ref:`tests.env.modules`
 
 You can have pavilion load module files automatically for each test or
 build. This assumes the modules (and module build combinations) are
 available on your system. If the test can't load a module, the test will
 report a ENV\_FAILED status and fail.
 
-.. code:: yaml
+.. code-block:: yaml
 
-    super_magic: 
+    super_magic:
         scheduler: slurm
         build:
-          modules: 
+          modules:
             - gcc/7.4.0
             - openmpi
           cmds:
             - mpicc -o super_magic super_magic.c
         run:
-          # This runs as a separate script from the build, so you 
+          # This runs as a separate script from the build, so you
           # have to specify modules for both the build and run.
           modules:
             - gcc/7.4.0
@@ -267,11 +319,11 @@ default when logging in. That state may include modules that you don't
 want loaded, so Pavilion provides a means for removing and swapping
 modules as well.
 
-.. code:: yaml
+.. code-block:: yaml
 
-    super_magic: 
+    super_magic:
         build:
-          modules: 
+          modules:
             # Swap the gcc module for the intel module.
             - 'gcc -> intel/18.0.3'
             # Remove the python module
@@ -283,8 +335,8 @@ Module Wrappers
 
 When tell pavilion to load/remove/swap modules, the code to do this is
 added to the test or build script automatically using
-`module wrapper <plugins/module_wrappers.html>`__
-plugins. The default module wrapper performs the module command, and
+:ref:`plugins.module_wrappers`.
+The default module wrapper performs the module command, and
 then verifies that the module is actually loaded.
 
 More complicated setups are possible by adding additional plugins
@@ -292,13 +344,13 @@ that replace this default behaviour for particular modules or module versions.
 You could, for instance, wrap all your compiler modules to set a consistent
 compiler wrapper environment variable.
 
-.. code:: yaml
+.. code-block:: yaml
 
     openmp_test:
         build:
           modules:
             # Normally intel-mpi would require that we use mpiicc to build.
-            # In our case though, we use module_wrappers (not shown) to set the 
+            # In our case though, we use module_wrappers (not shown) to set the
             # $MPICC env variable consistently across different MPI modules.
             # We also set $OPENMP_FLAG to value, as it varies across compilers.
             - intel
@@ -306,7 +358,7 @@ compiler wrapper environment variable.
           cmds:
             - '$MPICC $OPENMP_FLAG -o openmp_test openmp_test.c
 
-    # This test will use the same command, but it will work thanks to our 
+    # This test will use the same command, but it will work thanks to our
     # module wrapper plugins.
     openmp_test2:
         inherits_from: openmp_test
@@ -328,7 +380,7 @@ An HPC testing framework wouldn't be complete without allowing you to
 schedule your tests. Most of the above example tests reference a
 scheduler, but don't configure one. It's time to rectify that.
 
-.. code:: yaml
+.. code-block:: yaml
 
     super_magic:
         scheduler: slurm
@@ -339,13 +391,13 @@ scheduler, but don't configure one. It's time to rectify that.
           tasks_per_node: 3
           partition: test_partition
           reservation: testing
-          qos: test 
-        
+          qos: test
+
         build:
           modules: [gcc, openmpi]
           cmds:
             - mpicc -o super_magic super_magic.c
-          
+
         run:
           modules: [gcc, openmpi]
           cmds:
@@ -353,11 +405,11 @@ scheduler, but don't configure one. It's time to rectify that.
             # category. This var generates an srun command based on the slurm args
             # given above. Assuming we got 10 nodes, it will look like:
             # srun -N 10 -n 30 ./supermagic -a
-            # Note that this would run in an sbatch script within an allocation 
+            # Note that this would run in an sbatch script within an allocation
             # that conforms to the rest of the slurm settings.
-            - {sched.test_cmd} ./supermagic -a 
+            - {sched.test_cmd} ./supermagic -a
 
-`Schedulers are plugins <plugins/schedulers.html>`__ in Pavilion, and are
+Schedulers are plugins in Pavilion, and are
 fairly loosely defined. They must at least do the following:
 
 * Provide a scheduler variable set for use in configs (the set may be empty).

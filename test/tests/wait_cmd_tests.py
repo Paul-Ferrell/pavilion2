@@ -16,27 +16,6 @@ class WaitCmdTests(PavTestCase):
     def tearDown(self):
         plugins._reset_plugins()
 
-    def test_wait_arguments(self):
-        wait_cmd = commands.get_command('wait')
-
-        parser = argparse.ArgumentParser()
-        wait_cmd._setup_arguments(parser)
-        args = parser.parse_args(['test1', 'test2'])
-
-        self.assertEqual(args.tests[0], 'test1')
-        self.assertEqual(args.tests[1], 'test2')
-        self.assertEqual(args.json, False)
-        self.assertEqual(args.timeout, '60')
-
-        parser = argparse.ArgumentParser()
-        wait_cmd._setup_arguments(parser)
-        args = parser.parse_args(['-j', '-t', '22' , 'test0', 'test9'])
-
-        self.assertEqual(args.tests[0], 'test0')
-        self.assertEqual(args.tests[1], 'test9')
-        self.assertEqual(args.json, True)
-        self.assertEqual(args.timeout, '22')
-
     def test_wait_command(self):
         """Test wait command."""
 
@@ -78,8 +57,8 @@ class WaitCmdTests(PavTestCase):
 
         configs = [config1, config2, config3]
 
-        tests = [TestRun(self.pav_cfg, test, VariableSetManager())
-                 for test in configs]
+        tests = [self._quick_test(config)
+                 for config in configs]
 
         for test in tests:
             test.RUN_SILENT_TIMEOUT = 1
@@ -95,14 +74,14 @@ class WaitCmdTests(PavTestCase):
         for test in suite.tests:
             parser = argparse.ArgumentParser()
             wait_cmd._setup_arguments(parser)
-            arg_list = ['-j', '-t', '1', str(test)]
+            arg_list = ['-t', '1', str(test)]
             args = parser.parse_args(arg_list)
             self.assertEqual(wait_cmd.run(self.pav_cfg, args), 0)
 
         # Testing for multiple tests with json output
         parser = argparse.ArgumentParser()
         wait_cmd._setup_arguments(parser)
-        arg_list = ['-j', '-t', '1'] + test_str.split()
+        arg_list = ['-t', '1'] + test_str.split()
         args = parser.parse_args(arg_list)
         self.assertEqual(wait_cmd.run(self.pav_cfg, args), 0)
 
@@ -110,13 +89,13 @@ class WaitCmdTests(PavTestCase):
         for test in suite.tests:
             parser = argparse.ArgumentParser()
             wait_cmd._setup_arguments(parser)
-            arg_list = ['-j', '-t', '1', str(test)]
+            arg_list = ['-t', '1', str(test)]
             args = parser.parse_args(arg_list)
             self.assertEqual(wait_cmd.run(self.pav_cfg, args), 0)
 
         # Testing for multiple tests with tabular output
         parser = argparse.ArgumentParser()
         wait_cmd._setup_arguments(parser)
-        arg_list = ['-j', '-t', '1'] + test_str.split()
+        arg_list = ['-t', '1'] + test_str.split()
         args = parser.parse_args(arg_list)
         self.assertEqual(wait_cmd.run(self.pav_cfg, args), 0)

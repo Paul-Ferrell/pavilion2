@@ -16,7 +16,13 @@ class TestConfigError(ValueError):
 TEST_NAME_RE_STR = r'^[a-zA-Z_][a-zA-Z0-9_-]*$'
 TEST_NAME_RE = re.compile(TEST_NAME_RE_STR)
 KEY_NAME_RE = re.compile(r'^[a-zA-Z][a-zA-Z0-9_-]*$')
-VAR_NAME_RE = re.compile(r'^[a-zA-Z][a-zA-Z0-9_-]*[\?\+]?$')
+VAR_KEY_NAME_RE = re.compile(r'^[a-zA-Z][a-zA-Z0-9_]*$')
+VAR_NAME_RE = re.compile(r'^[a-zA-Z][a-zA-Z0-9_]*[?+]?$')
+
+
+class PathCategoryElem(yc.CategoryElem):
+    """This is for category elements that need a valid unix path regex."""
+    _NAME_RE = re.compile(r".+$")
 
 
 class VariableElem(yc.CategoryElem):
@@ -28,7 +34,7 @@ class VariableElem(yc.CategoryElem):
     normalization of these values.
     """
 
-    _NAME_RE = KEY_NAME_RE
+    _NAME_RE = VAR_KEY_NAME_RE
 
     def __init__(self, name=None, **kwargs):
         """Just like a CategoryElem, but the sub_elem must be a StrElem
@@ -38,20 +44,46 @@ class VariableElem(yc.CategoryElem):
                                            defaults=None,
                                            **kwargs)
 
-    def normalize(self, values):
+    def normalize(self, value):
         """Normalize to either a dict of strings or just a string."""
-        if isinstance(values, str):
-            return values
+        if not isinstance(value, dict):
+            return yc.StrElem().normalize(value)
 
-        return super().normalize(values)
+        return super().normalize(value)
 
-    def validate(self, value_dict, partial=False):
+    def validate(self, value, partial=False):
         """Check for a single item and return it, otherwise return a dict."""
 
-        if isinstance(value_dict, str):
-            return value_dict
+        if isinstance(value, str):
+            return value
 
-        return super().validate(value_dict, partial=partial)
+        return super().validate(value, partial=partial)
+
+
+class CondCategoryElem(yc.CategoryElem):
+    """Allow any key. They'll be validated later."""
+    _NAME_RE = re.compile(r'^.*$')
+
+
+class EvalCategoryElem(yc.CategoryElem):
+    """Allow keys that start with underscore. Lowercase only."""
+
+    _NAME_RE = re.compile(r'[a-z_][a-z0-9_]*')
+
+
+class VarKeyCategoryElem(yc.CategoryElem):
+    """Allow Pavilion variable name like keys."""
+
+    # Allow names that have multiple, dot separated components, potentially
+    # including a '*'.
+    _NAME_RE = re.compile(r'^(?:[a-zA-Z][a-zA-Z0-9_-]*)'
+                          r'(?:\.|[a-zA-Z][a-zA-Z0-9_-]*)*')
+
+
+class ResultParserCatElem(yc.CategoryElem):
+    _NAME_RE = re.compile(
+        r'^[a-zA-Z_]\w*(\s*,\s*[a-zA-Z_]\w*)*$'
+    )
 
 
 class VarCatElem(yc.CategoryElem):
@@ -143,6 +175,25 @@ expected to be added to by various plugins.
 """
 
     ELEMENTS = [
+        yc.StrElem(
+            'name', hidden=True, default='<unnamed>',
+            help_text="The base name of the test. Value added automatically."),
+        yc.StrElem(
+            'suite', hidden=True, default='<no_suite>',
+            help_text="The name of the suite. Value added automatically."),
+        yc.StrElem(
+            'suite_path', hidden=True, default='<no_suite>',
+            help_text="Path to the suite file. Value added automatically."),
+        yc.StrElem(
+            'host', hidden=True, default='<unknown>',
+            help_text="Host (typically sys.sys_name) for which this test was "
+                      "created. Value added automatically."
+        ),
+        yc.ListElem(
+            'modes', hidden=True, sub_elem=yc.StrElem(),
+            help_text="Modes used in the creation of this test. Value is added "
+                      "automatically."
+        ),
         yc.RegexElem(
             'inherits_from', regex=TEST_NAME_RE_STR,
             help_text="Inherit from the given test section, and override "
@@ -150,17 +201,35 @@ expected to be added to by various plugins.
                       "overridden entirely"),
         yc.StrElem(
             'subtitle',
-            help_text="An extended title for this test. This is useful for "
-                      "assigning unique name to virtual tests through "
-                      "variable insertion. example, if a test has a single "
-                      "permutation variable 'subtest', then '{subtest}' "
-                      "would give a useful descriptor."),
+            help_text="An extended title for this test. Required for "
+                      "permuted tests."),
         yc.StrElem(
-            'summary', default='',
+            'group', default=None,
+            help_text="The group under which to build and run tests. "
+                      "Defaults to the group specified in pavilion.yaml."
+        ),
+        yc.RegexElem(
+            'umask', regex=r'[0-7]{3}', default=None,
+            help_text="The octal umask to apply to files created during the "
+                      "build and run processes. Defaults to the umask in "
+                      "pavilion.yaml."
+        ),
+        yc.KeyedElem(
+            'maintainer',
+            help_text="Information about who maintains this test.",
+            elements=[
+                yc.StrElem('name', default='unknown',
+                           help_text="Name or organization of the maintainer."),
+                yc.StrElem('email',
+                           help_text="Email address of the test maintainer."),
+            ]
+        ),
+        yc.StrElem(
+            'summary',
             help_text="Summary of the purpose of this test."
         ),
         yc.StrElem(
-            'doc', default='',
+            'doc',
             help_text="Detailed documentation string for this test."
         ),
         yc.ListElem(
@@ -178,44 +247,123 @@ expected to be added to by various plugins.
                       "single or list of strings key/string pairs."),
         yc.RegexElem('scheduler', regex=r'\w+', default="raw",
                      help_text="The scheduler class to use to run this test."),
+        CondCategoryElem(
+            'only_if', sub_elem=yc.ListElem(sub_elem=yc.StrElem()),
+            key_case=EnvCatElem.KC_MIXED,
+            help_text="Only run this test if each of the clauses in this "
+                      "section evaluate to true. Each clause consists of "
+                      "a mapping key (that can contain Pavilion variable "
+                      "references, like '{{pav.user}}' or '{{sys.sys_arch}}'"
+                      ") and one or more regex values"
+                      "(that much match the whole key). A clause is true "
+                      "if the value of the Pavilion variable matches one or"
+                      " more of the values. "
+        ),
+        CondCategoryElem(
+            'not_if', sub_elem=yc.ListElem(sub_elem=yc.StrElem()),
+            key_case=EnvCatElem.KC_MIXED,
+            help_text="Will NOT run this test if at least one of the "
+                      "clauses evaluates to true. Each clause consists of "
+                      "a mapping key (that can contain Pavilion variable "
+                      "references, like '{{pav.user}}' or "
+                      "'{{sys.sys_arch}}') and one or more "
+                      "regex values (that much match the whole key)."
+                      "A clause is true if the value of "
+                      "the Pavilion variable matches one or more of the "
+                      " values."
+        ),
+        yc.StrElem(
+            'compatible_pav_versions', default='',
+            help_text="Specify compatibile pavilion versions for this "
+                      "specific test. Can be represented as a single "
+                      "version, ex: 1, 1.2, 1.2.3, or a range, "
+                      "ex: 1.2-1.3.4, etc."
+        ),
+        yc.StrElem(
+            'test_version', default='0.0',
+            help_text="Documented test version."
+        ),
         yc.KeyedElem(
             'build', elements=[
-                yc.StrElem(
-                    'on_nodes', default='False',
-                    choices=['true', 'false', 'True', 'False'],
-                    help_text="Whether to build on or off of the test "
-                              "allocation."
-                ),
-                yc.StrElem(
-                    'source_location',
-                    help_text="Path to the test source. It may be a directory, "
-                              "a tar file, or a URI. If it's a directory or "
-                              "file, the path is to '$PAV_CONFIG/test_src' by "
-                              "default. For url's, the is automatically "
-                              "checked for updates every time the test run. "
-                              "Downloaded files are placed in a 'downloads' "
-                              "under the pavilion working directory. (set in "
-                              "pavilion.yaml)"),
-                yc.StrElem(
-                    'source_download_name',
-                    help_text='When downloading source, we by default use the '
-                              'last of the url path as the filename, or a hash '
-                              'of the url if is no suitable name. Use this '
-                              'parameter to override behavior with a '
-                              'pre-defined filename.'),
                 yc.ListElem(
-                    'modules', sub_elem=yc.StrElem(),
-                    help_text="Modules to load into the build environment."),
+                    'cmds', sub_elem=yc.StrElem(),
+                    help_text='The sequence of commands to run to perform '
+                              'the build.'),
+                yc.ListElem(
+                    'prepend_cmds', sub_elem=yc.StrElem(),
+                    help_text='Commands to run before inherited build '
+                              'commands.'),
+                yc.ListElem(
+                    'append_cmds', sub_elem=yc.StrElem(),
+                    help_text='Commands to run after inherited build '
+                              'commands.'),
+                yc.ListElem(
+                    'copy_files', sub_elem=yc.StrElem(),
+                    help_text="When attaching the build to a test run, copy "
+                              "these files instead of creating a symlink."
+                              "They may include path glob wildcards, "
+                              "including the recursive '**'."),
+                PathCategoryElem(
+                    'create_files',
+                    key_case=PathCategoryElem.KC_MIXED,
+                    sub_elem=yc.ListElem(sub_elem=yc.StrElem()),
+                    help_text="File(s) to create at path relative to the test's"
+                              "test source directory"),
                 EnvCatElem(
                     'env', sub_elem=yc.StrElem(), key_case=EnvCatElem.KC_MIXED,
                     help_text="Environment variables to set in the build "
                               "environment."),
                 yc.ListElem(
                     'extra_files', sub_elem=yc.StrElem(),
-                    help_text='Files to copy into the build environment. '
+                    help_text='File(s) to copy into the build environment. '
                               'Relative paths searched for in ~/.pavilion, '
                               '$PAV_CONFIG. Absolute paths are ok, '
                               'but not recommended.'),
+                yc.ListElem(
+                    'modules', sub_elem=yc.StrElem(),
+                    help_text="Modules to load into the build environment."),
+                yc.StrElem(
+                    'on_nodes', default='False',
+                    choices=['true', 'false', 'True', 'False'],
+                    help_text="Whether to build on or off of the test "
+                              "allocation."),
+                yc.ListElem(
+                    'preamble', sub_elem=yc.StrElem(),
+                    help_text="Setup commands for the beginning of the build "
+                              "script. Added to the beginning of the run "
+                              "script.  These are generally expected to "
+                              "be host rather than test specific."),
+                yc.StrElem(
+                    'source_path',
+                    help_text="Path to the test source. It may be a directory, "
+                              "compressed file, compressed or "
+                              "uncompressed archive (zip/tar), and is handled "
+                              "according to the internal (file-magic) type. "
+                              "For relative paths Pavilion looks in the "
+                              "test_src directory "
+                              "within all known config directories. If this "
+                              "is left blank, Pavilion will always assume "
+                              "there is no source to build."),
+                yc.StrElem(
+                    'source_url',
+                    help_text='Where to find the source on the internet. By '
+                              'default, Pavilion will try to download the '
+                              'source from the given URL if the source file '
+                              'can\'t otherwise be found. You must give a '
+                              'source path so Pavilion knows where to store '
+                              'the file (relative paths will be stored '
+                              'relative to the local test_src directory.'),
+                yc.StrElem(
+                    'source_download', choices=['never', 'missing', 'latest'],
+                    default='missing',
+                    help_text="When to attempt to download the test source.\n"
+                              "  never - The url is for reference only.\n"
+                              "  missing - (default) Download if the source "
+                              "can't be found.\n"
+                              "  latest - Always try to fetch the latest "
+                              "source, tracking changes by "
+                              "file size/timestamp/hash."
+                ),
                 yc.StrElem(
                     'specificity',
                     default='',
@@ -231,39 +379,47 @@ expected to be added to by various plugins.
                     help_text="Time (in seconds) that a build can continue "
                               "without generating new output before it is "
                               "cancelled.  Can be left empty for no timeout."),
-                yc.ListElem(
-                    'cmds', sub_elem=yc.StrElem(),
-                    help_text='The sequence of commands to run to perform '
-                              'the build.'),
-                yc.ListElem(
-                    'preamble', sub_elem=yc.StrElem(),
-                    help_text="Setup commands for the beginning of the build "
-                              "script. Added to the beginning of the run "
-                              "script.  These are generally expected to "
-                              "be host rather than test specific."),
                 yc.StrElem(
                     'verbose', choices=['true', 'True', 'False', 'false'],
                     default='False',
                     help_text="Echo commands (including sourced files) in the"
                               " build log, and print the modules loaded and "
                               "environment before the cmds run."),
-                ],
+                yc.StrElem(
+                    'timeout_file', default=None,
+                    help_text='Specify a different file to follow for build '
+                              'timeouts.'),
+            ],
             help_text="The test build configuration. This will be "
                       "used to dynamically generate a build script for "
                       "building the test."),
 
         yc.KeyedElem(
             'run', elements=[
+                yc.ListElem('cmds', sub_elem=yc.StrElem(),
+                            help_text='The sequence of commands to run to run '
+                                      'the test.'),
                 yc.ListElem(
-                    'modules', sub_elem=yc.StrElem(),
-                    help_text="Modules to load into the run environment."),
+                    'prepend_cmds', sub_elem=yc.StrElem(),
+                    help_text='Commands to run before inherited build '
+                              'commands.'),
+                yc.ListElem(
+                    'append_cmds', sub_elem=yc.StrElem(),
+                    help_text='Commands to run after inherited build '
+                              'commands.'),
+                PathCategoryElem(
+                    'create_files',
+                    key_case=PathCategoryElem.KC_MIXED,
+                    sub_elem=yc.ListElem(sub_elem=yc.StrElem()),
+                    help_text="File(s) to create at path relative to the test's"
+                              "test source directory"),
                 EnvCatElem(
                     'env', sub_elem=yc.StrElem(), key_case=EnvCatElem.KC_MIXED,
                     help_text="Environment variables to set in the run "
                               "environment."),
-                yc.ListElem('cmds', sub_elem=yc.StrElem(),
-                            help_text='The sequence of commands to run to run '
-                                      'the test.'),
+                yc.ListElem(
+                    'modules', sub_elem=yc.StrElem(),
+                    help_text="Modules to load into the run environment."),
                 yc.ListElem(
                     'preamble', sub_elem=yc.StrElem(),
                     help_text="Setup commands for the beginning of the build "
@@ -271,30 +427,43 @@ expected to be added to by various plugins.
                               "script. These are generally expected to "
                               "be host rather than test specific."),
                 yc.StrElem(
+                    'timeout', default='300',
+                    help_text="Time that a build can continue without "
+                              "generating new output before it is cancelled. "
+                              "Can be left empty for no timeout."),
+                yc.StrElem(
                     'verbose', choices=['true', 'True', 'False', 'false'],
                     default='False',
                     help_text="Echo commands (including sourced files) in the "
                               "build log, and print the modules loaded and "
                               "environment before the cmds run."),
                 yc.StrElem(
-                    'timeout', default='300',
-                    help_text="Time that a build can continue without "
-                              "generating new output before it is cancelled. "
-                              "Can be left empty for no timeout.")
+                    'timeout_file', default=None,
+                    help_text='Specify a different file to follow for run '
+                              'timeouts.'),
             ],
             help_text="The test run configuration. This will be used "
                       "to dynamically generate a run script for the "
                       "test."),
+        EvalCategoryElem(
+            'result_evaluate',
+            sub_elem=yc.StrElem(),
+            help_text="The keys and values in this section will also "
+                      "be added to the result json. The values are "
+                      "expressions (like in {{<expr>}} in normal Pavilion "
+                      "strings). Other result values (including those "
+                      "from result parsers and other evaluations are "
+                      "available to reference as variables."),
     ]
 
     # We'll append the result parsers separately, to have an easy way to
     # access it.
     _RESULT_PARSERS = yc.KeyedElem(
-        'results', elements=[],
+        'result_parse', elements=[],
         help_text="Result parser configurations go here. Each parser config "
                   "can occur by itself or as a list of configs, in which "
                   "case the parser will run once for each config given. The "
-                  "output of these parsers will be combined into the final "
+                  "output of these parsers will be added to the final "
                   "result json data.")
     ELEMENTS.append(_RESULT_PARSERS)
 
@@ -348,7 +517,6 @@ expected to be added to by various plugins.
 
         # Validate the config.
         required_keys = {
-            'key': False,
             'files': False,
             'action': False,
             'per_file': False,
@@ -369,7 +537,7 @@ expected to be added to by various plugins.
             elements=config_items
         )
 
-        list_elem = yc.ListElem(name, sub_elem=config)
+        list_elem = ResultParserCatElem(name, sub_elem=config)
 
         if name in [e.name for e in cls._RESULT_PARSERS.config_elems.values()]:
             raise ValueError("Tried to add result parser with name '{}'"

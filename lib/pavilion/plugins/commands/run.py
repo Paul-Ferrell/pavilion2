@@ -1,31 +1,68 @@
-import codecs
-import errno
-import pathlib
-import time
-from collections import defaultdict
+"""The run command resolves tests by their names, builds them, and runs them."""
 
+import errno
+from typing import List
+
+from pavilion import cmd_utils
 from pavilion import commands
 from pavilion import output
-from pavilion.output import fprint
-from pavilion import result_parsers
+from pavilion import result
 from pavilion import schedulers
-from pavilion import system_variables
-from pavilion import test_config
-from pavilion.plugins.commands.status import print_from_test_obj
-from pavilion.series import TestSeries, test_obj_from_id
-from pavilion.status_file import STATES
-from pavilion.test_config.string_parser import ResolveError
-from pavilion.test_run import TestRun, TestRunError
+from pavilion.builder import MultiBuildTracker
+from pavilion.output import fprint
+from pavilion.series import TestSeries
+from pavilion.test_run import TestRun
 
 
 class RunCommand(commands.Command):
+    """Resolve tests by name, build, and run them.
+
+    :ivar TestSeries last_series: The suite number of the last suite to run
+        with this command (for unit testing).
+    :ivar List[TestRun] last_tests: A list of the last test runs that this
+        command started (also for unit testing).
+    """
+
+    BUILD_ONLY = False
 
     def __init__(self):
 
         super().__init__('run', 'Setup and run a set of tests.',
                          short_help="Setup and run a set of tests.")
 
+        self.last_series = None
+        self.last_tests = []  # type: List[TestRun]
+
     def _setup_arguments(self, parser):
+
+        self._generic_arguments(parser)
+
+        parser.add_argument(
+            '-w', '--wait', action='store', type=int, default=None,
+            help='Wait this many seconds to make sure at least one test '
+                 'started before returning. If a test hasn\'t started by '
+                 'then, cancel all tests and return a failure. Defaults to'
+                 'not checking tests before returning.'
+        )
+        parser.add_argument(
+            '-f', '--file', dest='files', action='append', default=[],
+            help='One or more files to read to get the list of tests to run. '
+                 'These files should contain a newline separated list of test '
+                 'names. Lines that start with a \'#\' are ignored as '
+                 'comments.')
+        parser.add_argument(
+            '-s', '--status', action='store_true', default=False,
+            help='Display test statuses'
+        )
+
+    @staticmethod
+    def _generic_arguments(parser):
+        """Setup the generic arguments for the run command. We break this out
+        because the build and run commands are the same, but have slightly
+        different args.
+
+        :param argparse.ArgumentParser parser:
+        """
 
         parser.add_argument(
             '-H', '--host', action='store',
@@ -44,25 +81,21 @@ class RunCommand(commands.Command):
                  '\'key=value\', where key is the dot separated key name, '
                  'and value is a json object.')
         parser.add_argument(
-            '-f', '--file', dest='files', action='append', default=[],
-            help='One or more files to read to get the list of tests to run. '
-                 'These files should contain a newline separated list of test '
-                 'names. Lines that start with a \'#\' are ignored as '
-                 'comments.')
-        parser.add_argument(
-            '-j', '--json', action='store_true', default=False,
-            help='Give output as json, rather than as standard human readable.'
+            '-b', '--build-verbose', dest='build_verbosity', action='count',
+            default=0,
+            help="Increase the verbosity when building. By default, the "
+                 "count of current states for the builds is printed. If this "
+                 "argument is included once, the final status and note for "
+                 "each build is printed. If this argument is included more"
+                 "than once, every status change for each build is printed. "
+                 "This only applies for local builds; refer to the build log "
+                 "for information on 'on_node' builds."
         )
         parser.add_argument(
-            '-w', '--wait', action='store', type=int, default=None,
-            help='Wait this many seconds to make sure at least one test '
-                 'started before returning. If a test hasn\'t started by '
-                 'then, cancel all tests and return a failure. Defaults to'
-                 'not checking tests before returning.'
-        )
-        parser.add_argument(
-            '-s', '--status', action='store_true', default=False,
-            help='Display test statuses'
+            '-r', '--rebuild', action='store_true', default=False,
+            help="Deprecate existing builds of these tests and rebuild. This "
+                 "should be necessary only if the system or user environment "
+                 "under which Pavilion runs has changed."
         )
         parser.add_argument(
             'tests', nargs='*', action='store',
@@ -79,291 +112,119 @@ class RunCommand(commands.Command):
         :param pav_cfg: The pavilion configuration.
         :param args: The parsed command line argument object.
         """
-
         # 1. Resolve the test configs
         #   - Get sched vars from scheduler.
         #   - Compile variables.
         #
 
-        overrides = {}
-        for ovr in args.overrides:
-            if '=' not in ovr:
-                fprint("Invalid override value. Must be in the form: "
-                       "<key>=<value>. Ex. -c run.modules=['gcc'] ",
-                       file=self.errfile)
-                return errno.EINVAL
+        mb_tracker = MultiBuildTracker()
 
-            key, value = ovr.split('=', 1)
-            overrides[key] = value
+        local_builds_only = getattr(args, 'local_builds_only', False)
 
-        sys_vars = system_variables.get_vars(True)
-
-        try:
-            configs_by_sched = self._get_tests(
-                pav_cfg=pav_cfg,
-                host=args.host,
-                test_files=args.files,
-                tests=args.tests,
-                modes=args.modes,
-                overrides=overrides,
-                sys_vars=sys_vars,
-            )
-
-            tests_by_sched = self._configs_to_tests(
-                pav_cfg=pav_cfg,
-                configs_by_sched=configs_by_sched,
-            )
-
-        except commands.CommandError as err:
-            # Our error messages get escaped to a silly degree
-            err = codecs.decode(str(err), 'unicode-escape')
-            fprint(err, file=self.errfile)
+        test_list = self._get_tests(
+            pav_cfg, args, mb_tracker, build_only=self.BUILD_ONLY,
+            local_builds_only=getattr(args, 'local_builds_only', False))
+        if test_list is None:
             return errno.EINVAL
 
-        all_tests = sum(tests_by_sched.values(), [])
+        all_tests = test_list
+        self.last_tests = all_tests
 
         if not all_tests:
             fprint("You must specify at least one test.", file=self.errfile)
             return errno.EINVAL
 
         series = TestSeries(pav_cfg, all_tests)
+        self.last_series = series
 
-        rp_errors = []
-        for test in all_tests:
+        res = self.check_result_format(all_tests)
+        if res != 0:
+            self._complete_tests(all_tests)
+            return res
 
-            # Make sure the result parsers have reasonable arguments.
-            try:
-                result_parsers.check_args(test.config['results'])
-            except TestRunError as err:
-                rp_errors.append(str(err))
+        all_tests = [test for test in all_tests if not test.skipped]
 
-        if rp_errors:
-            fprint("Result Parser configurations had errors:",
-                   file=self.errfile, color=output.RED)
-            for msg in rp_errors:
-                fprint(msg, bullet=' - ', file=self.errfile)
-            return errno.EINVAL
+        res = cmd_utils.build_local(
+            tests=all_tests,
+            max_threads=pav_cfg.build_threads,
+            mb_tracker=mb_tracker,
+            build_verbosity=args.build_verbosity,
+            outfile=self.outfile,
+            errfile=self.errfile)
+        if res != 0:
+            self._complete_tests(all_tests)
+            return res
 
-        failed_build = None
-        # Building any tests that specify that they should be built before
-        for test in all_tests:
-            if test.config['build']['on_nodes'] not in ['true', 'True']:
-                if not test.build():
-                    fprint("Error building test: ", file=self.errfile,
-                           color=output.RED)
-                    fprint("status {status.state} - {status.note}"
-                           .format(status=test.status.current()),
-                           file=self.errfile)
-                    fprint("For more information, run 'pav log build {}'"
-                           .format(test.id), file=self.errfile)
-                    failed_build = test
-                    break
+        self._complete_tests([test for test in all_tests if
+                              test.build_only and test.build_local])
 
-        if failed_build is not None:
-            for test in all_tests:
-                if test is not failed_build:
-                    test.status.set(
-                        STATES.ABORTED,
-                        "Canceled due to problems with other tests in run")
-            return errno.EINVAL
+        wait = getattr(args, 'wait', None)
+        report_status = getattr(args, 'status', False)
 
-        for sched_name, tests in tests_by_sched.items():
-            sched = schedulers.get_plugin(sched_name)
+        if self.BUILD_ONLY and local_builds_only:
+            non_local_build_tests = [test for test in all_tests
+                                     if not test.build_local]
+            if non_local_build_tests:
+                fprint(
+                    "Skipping tests that are set to build on nodes: {}"
+                    .format([test.name for test in non_local_build_tests]),
+                    file=self.outfile, color=output.YELLOW)
+            return 0
 
-            try:
-                sched.schedule_tests(pav_cfg, tests)
-            except schedulers.SchedulerPluginError as err:
-                fprint('Error scheduling tests:', file=self.errfile,
-                       color=output.RED)
-                fprint(err, bullet='  ', file=self.errfile)
-                fprint('Cancelling already kicked off tests.',
-                       file=self.errfile)
-                self._cancel_all(tests_by_sched)
+        return series.run_tests(
+            pav_cfg=pav_cfg,
+            wait=wait,
+            report_status=report_status,
+            outfile=self.outfile,
+            errfile=self.errfile
+        )
 
-        # Tests should all be scheduled now, and have the SCHEDULED state
-        # (at some point, at least). Wait until something isn't scheduled
-        # anymore (either running or dead), or our timeout expires.
-        wait_result = None
-        if args.wait is not None:
-            end_time = time.time() + args.wait
-            while time.time() < end_time and wait_result is None:
-                last_time = time.time()
-                for sched_name, tests in tests_by_sched.items():
-                    sched = schedulers.get_plugin(sched_name)
-                    for test in tests:
-                        status = test.status.current()
-                        if status == STATES.SCHEDULED:
-                            status = sched.job_status(pav_cfg, test)
-
-                        if status != STATES.SCHEDULED:
-                            # The test has moved past the scheduled state.
-                            wait_result = None
-                            break
-
-                        break
-
-                if wait_result is None:
-                    # Sleep at most SLEEP INTERVAL seconds, minus the time
-                    # we spent checking our jobs.
-                    time.sleep(self.SLEEP_INTERVAL - (time.time() - last_time))
-
-        fprint("{} test{} started as test series {}."
-               .format(len(all_tests),
-                       's' if len(all_tests) > 1 else '',
-                       series.id),
-               file=self.outfile,
-               color=output.GREEN)
-
-        if args.status:
-            tests = list(series.tests.keys())
-            tests, _ = test_obj_from_id(pav_cfg, tests)
-            return print_from_test_obj(pav_cfg, tests, self.outfile, args.json)
-
-        return 0
-
-    def _get_tests(self, pav_cfg, host, test_files, tests, modes,
-                   overrides, sys_vars):
-        """Translate a general set of pavilion test configs into the final,
-        resolved configurations. These objects will be organized in a
-        dictionary by scheduler, and have a scheduler object instantiated and
-        attached.
-        :param pav_cfg: The pavilion config
-        :param str host: The host config to target these tests with
-        :param list(str) modes: The mode configs to use.
-        :param list(Path) test_files: Files containing a newline separated
-            list of tests.
-        :param list(str) tests: The tests to run.
-        :param list(str) overrides: Overrides to apply to the configurations.
-        :param system_variables.SysVarDict sys_vars: The system variables dict.
-        :returns: A dictionary (by scheduler type name) of lists of tuples
-            test configs and their variable managers.
+    def _get_tests(self, pav_cfg, args, mb_tracker, build_only=False,
+                   local_builds_only=False):
+        """Turn the test run arguments into actual TestRun objects.
+        :param pav_cfg: The pavilion config object
+        :param args: The run command arguments
+        :param MultiBuildTracker mb_tracker: The build tracker.
+        :param bool build_only: Whether to denote that we're only building
+            these tests.
+        :param bool local_builds_only: Only include tests that would be built
+            locally.
+        :return:
+        :rtype: []
         """
-        self.logger.debug("Finding Configs")
-
-        # Use the sys_host if a host isn't specified.
-        if host is None:
-            host = sys_vars.get('sys_name')
-
-        tests = list(tests)
-        for file in test_files:
-            try:
-                with pathlib.PosixPath(file).open() as test_file:
-                    for line in test_file.readlines():
-                        line = line.strip()
-                        if line and not line.startswith('#'):
-                            tests.append(line)
-            except (OSError, IOError) as err:
-                msg = "Could not read test file {}: {}".format(file, err)
-                self.logger.error(msg)
-                raise commands.CommandError(msg)
 
         try:
-            raw_tests = test_config.load_test_configs(pav_cfg, host, modes,
-                                                      tests)
-        except test_config.TestConfigError as err:
-            self.logger.error(str(err))
-            raise commands.CommandError(str(err))
+            test_configs = cmd_utils.get_test_configs(pav_cfg=pav_cfg,
+                                                      host=args.host,
+                                                      test_files=args.files,
+                                                      tests=args.tests,
+                                                      modes=args.modes,
+                                                      overrides=args.overrides,
+                                                      outfile=self.outfile)
 
-        raw_tests_by_sched = defaultdict(lambda: [])
-        tests_by_scheduler = defaultdict(lambda: [])
+            # Remove non-local builds when doing only local builds.
+            if build_only and local_builds_only:
+                locally_built_tests = []
+                for ptest in test_configs:
+                    if ptest.config['build']['on_nodes'].lower() != 'true':
+                        locally_built_tests.append(ptest)
 
-        # Apply config overrides.
-        for test_cfg in raw_tests:
-            # Apply the overrides to each of the config values.
-            try:
-                test_config.apply_overrides(test_cfg, overrides)
-            except test_config.TestConfigError as err:
-                msg = 'Error applying overrides to test {} from {}: {}' \
-                    .format(test_cfg['name'], test_cfg['suite_path'], err)
-                self.logger.error(msg)
-                raise commands.CommandError(msg)
+                test_configs = locally_built_tests
 
-            # Resolve all configuration permutations.
-            try:
-                p_cfg, permutes = test_config.resolve_permutations(
-                    test_cfg,
-                    pav_cfg.pav_vars,
-                    sys_vars
-                )
-                for p_var_man in permutes:
-                    # Get the scheduler from the config.
-                    sched = p_cfg['scheduler']
-                    sched = test_config.resolve_section_vars(
-                        component=sched,
-                        var_man=p_var_man,
-                        allow_deferred=False,
-                        deferred_only=False,
-                    )
-                    raw_tests_by_sched[sched].append((p_cfg, p_var_man))
-            except test_config.TestConfigError as err:
-                msg = 'Error resolving permutations for test {} from {}: {}' \
-                    .format(test_cfg['name'], test_cfg['suite_path'], err)
-                self.logger.error(msg)
-                raise commands.CommandError(msg)
+            test_list = cmd_utils.configs_to_tests(
+                pav_cfg=pav_cfg,
+                proto_tests=test_configs,
+                mb_tracker=mb_tracker,
+                build_only=build_only,
+                rebuild=args.rebuild,
+                outfile=self.outfile,
+            )
 
-        # Get the schedulers for the tests, and the scheduler variables.
-        # The scheduler variables are based on all of the
-        for sched_name in raw_tests_by_sched.keys():
-            try:
-                sched = schedulers.get_plugin(sched_name)
-            except KeyError:
-                msg = "Could not find scheduler '{}'.".format(sched_name)
-                self.logger.error(msg)
-                raise commands.CommandError(msg)
+        except commands.CommandError as err:
+            fprint(err, file=self.errfile, flush=True)
+            return None
 
-            nondeferred_cfg_sctns = schedulers.list_plugins()
-
-            # Builds must have the values of all their variables now.
-            nondeferred_cfg_sctns.append('build')
-
-            # Set the scheduler variables for each test.
-            for test_cfg, test_var_man in raw_tests_by_sched[sched_name]:
-
-                sched_config = test_config.resolve_section_vars(
-                    component=test_cfg[sched_name],
-                    var_man=test_var_man,
-                    allow_deferred=False,
-                    deferred_only=False,
-                )
-
-                test_var_man.add_var_set('sched', sched.get_vars(sched_config))
-
-                # Resolve all variables for the test (that aren't deferred).
-                try:
-                    resolved_config = test_config.resolve_config(
-                        test_cfg,
-                        test_var_man,
-                        no_deferred_allowed=nondeferred_cfg_sctns)
-
-                except (ResolveError, KeyError) as err:
-                    msg = "Error resolving variables in config at '{}': {}" \
-                        .format(test_cfg['suite_path'].resolve(test_var_man),
-                                err)
-                    self.logger.error(msg)
-                    raise commands.CommandError(msg)
-
-                tests_by_scheduler[sched.name].append(
-                    (resolved_config, test_var_man))
-        return tests_by_scheduler
-
-    @staticmethod
-    def _configs_to_tests(pav_cfg, configs_by_sched):
-        """Convert the dictionary of test configs by scheduler into actual
-        tests."""
-
-        tests_by_sched = {}
-
-        for sched_name in configs_by_sched.keys():
-            tests_by_sched[sched_name] = []
-            for i in range(len(configs_by_sched[sched_name])):
-                cfg, var_man = configs_by_sched[sched_name][i]
-                tests_by_sched[sched_name].append(TestRun(
-                    pav_cfg=pav_cfg,
-                    config=cfg,
-                    var_man=var_man,
-                ))
-
-        return tests_by_sched
+        return test_list
 
     @staticmethod
     def _cancel_all(tests_by_sched):
@@ -374,3 +235,35 @@ class RunCommand(commands.Command):
 
             for test in tests:
                 sched.cancel_job(test)
+
+    @staticmethod
+    def _complete_tests(tests):
+        """Mark all of the given tests as complete. We generally do this after
+        an error has been encountered, or if it was only built.
+        :param [TestRun] tests: The tests to mark complete.
+        """
+
+        for test in tests:
+            test.set_run_complete()
+
+    def check_result_format(self, tests):
+        """Make sure the result parsers for each test are ok."""
+
+        rp_errors = []
+        for test in tests:
+
+            # Make sure the result parsers have reasonable arguments.
+            try:
+                result.check_config(test.config['result_parse'],
+                                    test.config['result_evaluate'])
+            except result.ResultError as err:
+                rp_errors.append((test, str(err)))
+
+        if rp_errors:
+            fprint("Result Parser configurations had errors:",
+                   file=self.errfile, color=output.RED)
+            for test, msg in rp_errors:
+                fprint(test.name, '-', msg, file=self.errfile)
+            return errno.EINVAL
+
+        return 0

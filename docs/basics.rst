@@ -7,7 +7,7 @@ Getting Started
 Setup
 ~~~~~
 
-See the `install docs <install.html>`__ if you need to install Pavilion*
+See the :ref:`install` if you need to install Pavilion*
 
 Add the PAV bin directory to your Path.
 
@@ -15,7 +15,7 @@ Add the PAV bin directory to your Path.
 
     PATH=<PVINSTALL_PATH>/bin:${PATH}
 
-Pavilion figures out paths to everything else on it's own.
+Pavilion figures out paths to everything else on its own.
 
 Then simply run pavilion:
 
@@ -26,11 +26,11 @@ Then simply run pavilion:
 Configure Tests
 ~~~~~~~~~~~~~~~
 
-Pavilion doesn't come with any tests itself, it's just a system for
+Pavilion doesn't come with any tests itself; it's just a system for
 running them on HPC clusters. Each test needs a configuration script,
 and most will need some source files. Both of these will live in one of
-your `config directories <config.html#config-directories>`__ under the
-``tests/`` and ``test_src/`` sub-directories.
+your :ref:`config.config_dirs` under the ``tests/`` and ``test_src/``
+sub-directories.
 
 Test configs tell pavilion what environment it needs to build and run
 your test, the commands to run it, how to schedule it on a cluster, and
@@ -43,12 +43,12 @@ optional.
     # Tests are in a strictly defined YAML format.
 
     # This defines a test, and names it.
-    mytest: 
+    mytest:
 
       # The scheduler to use to schedule the test on a cluster.
       # In this case, we'll use the raw (local system) scheduler
       scheduler: raw
-      run: 
+      run:
         cmds: 'test -d /var/log/messages'
 
 The above test checks to see if the ``/var/log/messages`` directory
@@ -72,7 +72,7 @@ config directory.
 This config is used to override the Pavilion defaults for values in
 every test config run on that system. You can use these to set default
 values for things like the max nodes per job in a given scheduler,
-or setting useful `variables <tests/variables.html>`__ for that system. The
+or setting useful :ref:`tests.variables` for that system. The
 format is the same as a test config file, except with only one test and
 without the name for that test.
 
@@ -85,8 +85,8 @@ without the name for that test.
 The above host config would set the default scheduler to 'slurm' for
 tests kicked off on a host with a hostname of ``my_host``. Pavilion uses
 the contents of the ``sys_name`` test config variable to determine the
-current host, which is provided via a built-in `system variable
-plugin <plugins/sys_vars.html>`__. This behaviour can be overridden by
+current host, which is provided via a built-in
+:ref:`plugins.sys_vars`. This behaviour can be overridden by
 providing your own sys\_var plugin, which is especially useful on
 clusters with multiple front-ends.
 
@@ -103,7 +103,7 @@ pavilion config directory.
 
 .. code:: yaml
 
-    slurm: 
+    slurm:
         account: tester
         partition: post-dst
 
@@ -122,9 +122,9 @@ Did you forget what you named them? That ok! Just ask Pavilion.
 
     $ pav show tests
     -----------------------+----------------------------------------------------
-     Name                  | Summary                                            
+     Name                  | Summary
     -----------------------+----------------------------------------------------
-     hello_mpi.hello_mpi   | Builds and runs an MPI-based Hello, World program. 
+     hello_mpi.hello_mpi   | Builds and runs an MPI-based Hello, World program.
      hello_mpi.hello_worse | Builds and runs MPI-based Hello, World, but badly.
      supermagic.supermagic | Run all supermagic tests.
 
@@ -159,7 +159,7 @@ If you want to know what's going on with your tests, just use the
     ------+------------+----------+------------------+------------------------------
      Test | Name       | State    | Time             | Note
     ------+------------+----------+------------------+------------------------------
-     41   | supermagic | COMPLETE | 16 May 2019 10:38| Test completed successfully. 
+     41   | supermagic | COMPLETE | 16 May 2019 10:38| Test completed successfully.
 
 It will display the status of all the tests in the last test series you
 ran.
@@ -171,7 +171,7 @@ From the above, you may have noticed that each test gets a series id
 like ``s24`` and a test id like ``41``. You can use these id's to
 reference tests or suites of tests to get their status, results, and
 logs through the pavilion interface. The ID's are unique for a given
-Pavilion `working\_directory <config.html#working_dir>`__, but they will
+Pavilion :ref:`config.working_dir` but they will
 get reused as old tests are cleaned up.
 
 Test Results
@@ -196,17 +196,36 @@ command.
      supermagic | 41 | PASS   | 3.825702 | 19-05-16 10:38 | 19-05-16 10:38 | 19-05-16 10:38
 
 
-Every test has a results object that contains at least the keys listed
-above. - result - The PASS/FAIL/ERROR result for the test. - duration -
-How long the test lasted in seconds (finished - started) - created -
-When the test run was created - started - When the test actually started
-- finished - When the test run completed
-
-By default, a test passes if it's last command returns 0. You can
-override this behaviour by using `result parsers <tests/results.html>`__.
-You can also use result parsers to add additional, arbitrary values to
-the test results.
+Every test has a results object that contains a variety of useful,
+automatically populated keys. Additional keys can be defined through
+:ref:`result parsing and result evaluations <results.basics>`.
 
 Results are saved alongside each test, as well being written to a
 central result log that is suitable for import into Splunk or other
 tools.
+
+The Overall Result
+^^^^^^^^^^^^^^^^^^
+
+By default, a test passes if its last command returns ``0``, but this can be
+easily overridden.
+
+.. code-block:: yaml
+
+    mytest:
+        run:
+            cmds:
+                # We'll use the result parsers below to parse values from
+                # the output of the run script.
+                - './test_script.sh'
+
+        result_parse:
+            regex:
+                # Use the regex parser to extract a speed key and add it to
+                # the results.
+                speed:
+                    regex: '^speed (\d+)'
+
+        result_evaluate:
+            # The test will PASS if the speed (extracted above) is more than 50.
+            result: 'speed > 50'

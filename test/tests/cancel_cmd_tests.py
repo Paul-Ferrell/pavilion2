@@ -1,16 +1,13 @@
-from pavilion import plugins
-from pavilion import commands
-from pavilion import schedulers
-from pavilion.unittest import PavTestCase
-from pavilion import arguments
-from pavilion import series
-from pavilion.status_file import STATES
-from pavilion.plugins.commands.status import get_statuses
-from io import StringIO
-import sys
 import errno
-import time
-import json
+import sys
+from io import StringIO
+
+from pavilion import arguments
+from pavilion import commands
+from pavilion import plugins
+from pavilion import series
+from pavilion.plugins.commands.status import get_statuses
+from pavilion.unittest import PavTestCase
 
 
 class CancelCmdTests(PavTestCase):
@@ -32,18 +29,17 @@ class CancelCmdTests(PavTestCase):
             'cancel_test'
         ])
         run_cmd = commands.get_command(args.command_name)
-        run_cmd.outfile = StringIO()
+        run_cmd.outfile = run_cmd.errfile = StringIO()
         run_cmd.run(self.pav_cfg, args)
 
         args = arg_parser.parse_args([
             'cancel'
         ])
 
-        get_statuses(self.pav_cfg, args, StringIO())
+        get_statuses(self.pav_cfg, args.tests, StringIO())
 
         cancel_cmd = commands.get_command(args.command_name)
-        cancel_cmd.outfile = StringIO()
-        cancel_cmd.errfile = StringIO()
+        cancel_cmd.outfile = cancel_cmd.errfile = StringIO()
 
         self.assertEqual(cancel_cmd.run(self.pav_cfg, args), 0)
 
@@ -58,8 +54,7 @@ class CancelCmdTests(PavTestCase):
         ])
 
         cancel_cmd = commands.get_command(args.command_name)
-        cancel_cmd.outfile = StringIO()
-        cancel_cmd.errfile = StringIO()
+        cancel_cmd.outfile = cancel_cmd.errfile = StringIO()
 
         self.assertEqual(cancel_cmd.run(self.pav_cfg, args), errno.EINVAL)
 
@@ -90,8 +85,7 @@ class CancelCmdTests(PavTestCase):
         ])
 
         cancel_cmd = commands.get_command(args.command_name)
-        cancel_cmd.outfile = sys.stdout
-        cancel_cmd.errfile = StringIO()
+        cancel_cmd.outfile = cancel_cmd.errfile = StringIO()
 
         self.assertEqual(cancel_cmd.run(self.pav_cfg, args), 0)
 

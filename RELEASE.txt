@@ -1,8 +1,120 @@
 # This number should track progressive changes in this software, and correspond to git tags
 # denoting releases. It is entirely independent of the the Pavilion's VERSION.
-RELEASE=2.1
+RELEASE=2.2
 
 # Release History
+
+## 2.3 Release Notes
+ - Added 'flatten_results' option to the base Pavilion config. Allows for
+   producing a separate result log line for each 'per_file' result, making
+   charting in Splunk significantly easier. The results can be significantly 
+   larger, however, expecially on large machines.
+ - Added unified test run filtering in 'status' and 'result'.
+ - Added the 'list' command for searching test runs and series
+ - Added 'maint' command for maintanence operations.
+ - Results now include a 'uuid' key - A completely unique id for each test.
+ - Modules may now have nested paths (True lmod module organization)
+ - Updated permissions management.
+
+ - Backwards compatibility breaks
+   - 'fn' and 'n' result fields have been merged into 'per_file'.
+   - The 'status', and 'result' commands now search all available test runs
+     and select recent (1 day) tests by the current user on the current 
+     machine. For the old behavior, use ``pav status last``, etc. 
+   - Old tests will lack some expected properties for searching, 
+     as that information has been consolidated into the 'attributes' file
+     which they won't have.
+   - 'test_node_list' in the results has been replaced with the much shorter
+     'test_node_list_short' key.
+   - The results command '-l' (--show-logs) option is now '-L'.
+   - The results command '--json' argument and '--oneline' argments were removed. 
+     Use --summary instead.
+
+## 2.2 Release notes
+ - All new test config parser.
+ - Variable references are now 'expressions'.
+   - In addition to variables, they can contain math and functions.
+     - `'hello {{world * 2}}'`
+     - Assuming 'world' has a value of 5, would be: 'hello 10'
+ - Iterations (formerly sub-strings) can now contain more than one variable.
+   This results in all combinations of the variables being used.
+   - `'Greetings: [~hello {{name}}{{num}}~,]'`
+   - With `name: ['bob', 'janet']` and `num: [1,2]` would result in:
+   - 'Greetings: hello bob1, hello bob2, hello janet1, hello janet2'
+ - per test permissions settings
+   ```yaml
+   mytest:
+     group: secret_group
+     umask: '007'
+   ```
+ - Backwards compatibility breaks
+   - All duplicate keys in configs are now detected and cause errors.
+   - Default values may no longer be specified using '{{foo?}}'
+   - Dashes are no longer allowed in Pavilion variable names.
+     - `'{{name-len}}'`
+   - You can no longer have nested 'sub-strings' (now called iterations).
+   - Not everything can be escaped in Pavilion strings anymore. This is now
+     limited to all normal python escapes
+     (https://docs.python.org/2.0/ref/strings.html),
+     plus '[', '{', and '~'.
+   - The results section is now 'result_parse'
+   - Result parsers plugins now have explicit argument default and validation settings,
+     and the _check_args method must return the modified argument dictionary.
+     (rather than None before)
+
+   ```yaml
+   mytest:
+     variables:
+       unit_base: 100
+     result_parse:
+       regex:
+          speed:
+            regex: 'speed (\d+)'
+     result_evaluate:
+       speed_normalized: "speed / {{unit_base}}"
+       another_thing: '"some don''t string"'
+   ```
+   - build.source_location has changed.
+   ```yaml
+   mytest:
+     build:
+       source_path: mytest.zip
+       source_url: http://github.com/hpc/mytest/latest.zip
+       source_download: latest
+
+ - Build are now built in their final location, rather than in a tmp
+   location. This fixes the issues with symlinks (as they no longer
+   move, so they can be absolute), and issues with non-relocatable
+   builds.
+
+ - New config keys:
+   -
+   ```yaml
+   mytest:
+     maintainer:
+       name: Paul Ferrell
+       email: pferrell@lanl.gov
+    ```
+
+## 2.1.2
+ - Fixed some regressions from the 2.1.1 release.
+
+## 2.1.1
+ - Fixed speed of draw_table with new algorithm
+ - Fixed some name conflicts with the 'per_fullname' and 'per_name' result parser options.
+ - Fixed issue with pipe exceptions in pav results
+ - Fixed issue with slurm scheduler node selection.
+ - Fixed clean command exceptions
+ - Updated reserved result parser key list. Renamed 'errors' to 'pav_result_errors'.
+ - and many smaller bug fixes.
+ - Updated yaml_config version.
+ - Updated the ls and cat commands, merged the tree command into ls.
+ - Moved build code into its own module
+ - Added include/exclude_nodes option to slurm.
+ - Added a 'build' command. Like the 'run' command, but only builds.
+ - Added '--rebuild' option to both build and run (and the capability to do so)
+ - Added better build tracking output and verbosity under the 'run' command.
+
 
 ## 2.1
  - Quite a few bugfixes.
